@@ -1,0 +1,11 @@
+[[exchanges]]
+name = "binance_com"
+is_enabled = true
+symbols_url = "https://api.binance.com/api/v3/exchangeInfo"
+api_url = "wss://stream.binance.com:9443/stream"
+
+[[exchanges]]
+name = "bitstamp"
+is_enabled = true
+symbols_url = "https://www.bitstamp.net/api/v2/trading-pairs-info"
+api_url = "wss://ws.bitstamp.net:443"

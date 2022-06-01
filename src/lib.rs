@@ -14,6 +14,7 @@ pub mod core {
     use rust_decimal::Decimal;
     use std::collections::BinaryHeap;
     use std::cmp::{Ordering, Ord, PartialOrd, PartialEq, Eq};
+    use std::hash::{Hash, Hasher};
 
     #[derive(Debug, Deserialize, Serialize)]
     pub struct Config {
@@ -25,8 +26,25 @@ pub mod core {
         pub name: String,
         pub is_enabled: bool,
         pub symbols_url:String,
-        pub api_url: String,
+        pub api_url: String
+        //pub ws: 
     }
+
+    impl Hash for Exchange {
+        #[inline]
+        fn hash<H: Hasher>(&self, hasher: &mut H) {
+            self.name.hash(hasher);
+        }
+    }
+
+    impl PartialEq for Exchange {
+        #[inline]
+        fn eq(&self, other: &Self) -> bool {
+            self.name == other.name
+        }
+    }
+
+    impl Eq for Exchange {}
     
     pub fn read_config(path: &str) -> std::io::Result<Config> {
         let content = std::fs::read_to_string(path)?;
@@ -69,15 +87,15 @@ pub mod core {
             "binance_com" => {
                 let mut channels = String::new();
                 for s in symbols {
-                    channels.push_str(format!("'{}@depth20@100ms',", &s).as_str());
+                    channels.push_str(format!("\"{}@depth20@100ms\",", &s).as_str());
                 }
                 // remove trailing ','
                 channels.pop();
-                subscribe_msgs.push(format!("{{'method':'SUBSCRIBE','params':[{}]}}", channels));
+                subscribe_msgs.push(format!("{{\"method\":\"SUBSCRIBE\",\"params\":[{}],\"id\":1}}", channels));
             },
             "bitstamp" => {
                 for s in symbols {
-                    subscribe_msgs.push(format!("{{'event':'bts:subscribe','data':{{'channel':'order_book_{}'}}}}", &s));
+                    subscribe_msgs.push(format!("{{\"event\":\"bts:subscribe\",\"data\":{{\"channel\":\"order_book_{}\"}}}}", &s));
                 }
             },
             _ => { }
@@ -98,6 +116,7 @@ pub mod core {
     }
 
     impl<'a> Ord for BidPriceLevel<'a> {
+        #[inline]
         fn cmp(&self, other: &Self) -> Ordering {
             (self.data.price, self.data.qty).cmp(&(other.data.price, other.data.qty))
         }
@@ -109,6 +128,7 @@ pub mod core {
     }
 
     impl<'a> Ord for AskPriceLevel<'a> {
+        #[inline]
         fn cmp(&self, other: &Self) -> Ordering {
             match self.data.price.cmp(&other.data.price) {
                 Ordering::Less => Ordering::Greater,

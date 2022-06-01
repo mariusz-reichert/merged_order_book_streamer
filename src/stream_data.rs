@@ -1,6 +1,11 @@
-use rock::core::{read_config, build_subscribe_msgs, load_symbols_from_file, OrderBook};
+use rock::core::{read_config, build_subscribe_msgs, load_symbols_from_file, OrderBook, Exchange};
 use clap::Parser;
 use std::collections::HashMap;
+use tokio_tungstenite::{WebSocketStream, MaybeTlsStream, connect_async, tungstenite::protocol::Message};
+use futures_util::{StreamExt, SinkExt};
+use futures::future::join_all;
+use tokio::net::TcpStream;
+use url::Url;
 #[macro_use]
 extern crate log;
 
@@ -17,25 +22,52 @@ struct Args {
     symbols_file: String,
 }
 
-fn main() {
+async fn read_handle(mut ws: WebSocketStream<MaybeTlsStream<TcpStream>>) {
     env_logger::init();
+    info!("Spawned");
+    while let Some(msg) = ws.next().await {
+        let msg = msg.unwrap();
+        if msg.is_text() {
+            info!("Got:\n{}", msg);
+            //ws.send(msg).await.unwrap();
+        }
+    }
+    info!("Nothing");
+}
+
+#[tokio::main]
+async fn main() {
+    //env_logger::init();
     
     let args = Args::parse();
     let exchanges = &read_config(&args.config_file).unwrap().exchanges;
     let symbols = load_symbols_from_file(&args.symbols_file);
+    //let mut connections : HashMap<&Exchange, &mut WebSocketStream<MaybeTlsStream<TcpStream>>> = HashMap::new();
+    let mut order_books : HashMap<&str, OrderBook> = HashMap::new();
+    let mut handles = vec![];
 
     for ex in exchanges {
         if ex.is_enabled {
-            info!("Subscribing for {}", &ex.name);
+            //info!("Subscribing for {}", &ex.name);
             let msgs = build_subscribe_msgs(&ex, &symbols);
             let book = OrderBook::new();
-
+            let (mut ws, _) = connect_async(
+                Url::parse(&ex.api_url).expect(&format!("Can't connect to {}", &ex.api_url)),
+            )
+            .await.unwrap();
+            
             for m in &msgs {
-                info!("{}", m);
+                //info!("{}", m);
+                ws.send(Message::Text(m.to_string())).await.unwrap();
             }
+
+            handles.push(tokio::spawn(async move{ read_handle(ws).await; }));
+
+            //connections.insert(&ex, &mut ws);
             // call api, track resp, read subscrine resp, build book, register read handler
         }
     }
+    futures::future::join_all(handles).await;
 }
 
 // create common mapping bitstamp format BTC/USD

@@ -1,5 +1,4 @@
-use serde_json::Value;
-use rock::core::{read_config, get_json_symbols};
+use rock::config::{read_config, pull_symbols, parse_symbols};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::prelude::*;
@@ -36,9 +35,8 @@ fn main() {
         if ex.is_enabled {
             enabled_exchanges += 1u32;
             info!("Pulling symbols from {}", &ex.name);
-            let response = reqwest::blocking::get(&ex.symbols_url).unwrap().text().unwrap();
-            let json: Value = serde_json::from_str(&response).unwrap();
-            let symbols = get_json_symbols(&ex.name, &json);
+            let json = pull_symbols(&ex);
+            let symbols = parse_symbols(&ex.name, &json);
     
             for s in symbols {
                 sym_count

@@ -27,9 +27,9 @@ name = "rock"
 path = "src/lib.rs"
 
 [[bin]]
-name="pull_symbols"
-path="src/pull_symbols.rs"
+name="configure_symbols"
+path="src/configure_symbols.rs"
 
 [[bin]]
-name="stream_data"
-path="src/stream_data.rs"
+name="stream_market_data"
+path="src/stream_market_data.rs"

@@ -1,4 +1,5 @@
-use rock::core::{read_config, build_subscribe_msgs, load_symbols_from_file, OrderBook, Exchange};
+use rock::config::{read_config, build_subscribe_msgs, load_symbols};
+use rock::order_book::OrderBook;
 use clap::Parser;
 use std::collections::HashMap;
 use tokio_tungstenite::{WebSocketStream, MaybeTlsStream, connect_async, tungstenite::protocol::Message};
@@ -41,7 +42,7 @@ async fn main() {
     
     let args = Args::parse();
     let exchanges = &read_config(&args.config_file).unwrap().exchanges;
-    let symbols = load_symbols_from_file(&args.symbols_file);
+    let symbols = load_symbols(&args.symbols_file);
     //let mut connections : HashMap<&Exchange, &mut WebSocketStream<MaybeTlsStream<TcpStream>>> = HashMap::new();
     let mut order_books : HashMap<&str, OrderBook> = HashMap::new();
     let mut handles = vec![];

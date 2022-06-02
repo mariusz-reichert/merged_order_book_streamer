@@ -45,6 +45,7 @@ pub mod exchange {
             }
             symbols
         }
+
         fn build_subscribe_msgs(&self, symbols: &Vec<String>) -> Vec<String> {
             let mut subscribe_msgs = vec![];
             let mut channels = String::new();
@@ -69,12 +70,34 @@ pub mod exchange {
             }
             symbols
         }
+
         fn build_subscribe_msgs(&self, symbols: &Vec<String>) -> Vec<String> {
             let mut subscribe_msgs = vec![];
             for s in symbols {
                 subscribe_msgs.push(format!("{{\"event\":\"bts:subscribe\",\"data\":{{\"channel\":\"order_book_{}\"}}}}", s));
             }
             subscribe_msgs
+        }
+    }
+
+    pub struct NoneExchange {
+    }
+
+    impl Exchange for NoneExchange {
+        fn parse_symbols(&self, _: &Value) -> Vec<String> {
+            vec![]
+        }
+
+        fn build_subscribe_msgs(&self, _: &Vec<String>) -> Vec<String> {
+            vec![]
+        }
+    }
+
+    pub fn build_exchange(exchange_name: &str) -> Box<dyn Exchange> {
+        match exchange_name {
+            "binance_com" => Box::new(BinanceCom{}),
+            "bitstamp" => Box::new(Bitstamp{}),
+            _ => Box::new(NoneExchange{})
         }
     }
 }
@@ -197,22 +220,6 @@ pub mod config {
         buf.lines()
             .map(|l| l.expect("Could not parse line"))
             .collect()
-    }
-
-    pub fn parse_symbols(exchange_name: &str, json: &Value) -> Vec<String> {
-        match exchange_name {
-            "binance_com" => BinanceCom{}.parse_symbols(&json),
-            "bitstamp" => Bitstamp{}.parse_symbols(&json),
-            _ => Vec::<String>::new()
-        }
-    }
-
-    pub fn build_subscribe_msgs(exchange_name: &str, symbols: &Vec<String>) -> Vec<String> {
-        match exchange_name {
-            "binance_com" => BinanceCom{}.build_subscribe_msgs(&symbols),
-            "bitstamp" => Bitstamp{}.build_subscribe_msgs(&symbols),
-            _ => Vec::<String>::new()
-        }
     }
 }
 

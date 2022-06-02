@@ -1,4 +1,5 @@
-use rock::config::{read_config, pull_symbols, parse_symbols};
+use rock::config::{read_config, pull_symbols};
+use rock::exchange::{Exchange, build_exchange};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::prelude::*;
@@ -29,6 +30,7 @@ fn main() {
         .open(&args.symbols_file)
         .unwrap();
     let mut sym_count:HashMap<String, u32> = HashMap::new();
+    let mut exchanges : HashMap<&str, Box<dyn Exchange>> = HashMap::new();
     let mut enabled_counter = 0u32;
 
     for ex_info in exchanges_info {
@@ -37,9 +39,13 @@ fn main() {
             enabled_counter += 1u32;
             info!("Pulling symbols from {}", &ex_info.name);
             let json = pull_symbols(&ex_info.symbols_url);
-            for symbol in parse_symbols(&ex_info.name, &json) {
+            let symbols = exchanges.entry(&ex_info.name)
+            .or_insert(build_exchange(&ex_info.name))
+            .parse_symbols(&json);
+
+            for symbol in &symbols {
                 sym_count
-                    .entry(symbol)
+                    .entry(symbol.to_string())
                     .and_modify(|count| *count += 1u32)
                     .or_insert(1u32);
             }

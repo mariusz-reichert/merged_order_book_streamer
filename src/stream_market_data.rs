@@ -1,10 +1,10 @@
-use rock::config::{read_config, build_subscribe_msgs, load_symbols};
+use rock::config::{read_config, load_symbols};
 use rock::order_book::OrderBook;
+use rock::exchange::{Exchange, build_exchange};
 use clap::Parser;
 use std::collections::HashMap;
 use tokio_tungstenite::{WebSocketStream, MaybeTlsStream, connect_async, tungstenite::protocol::Message};
 use futures_util::{StreamExt, SinkExt};
-use futures::future::join_all;
 use tokio::net::TcpStream;
 use url::Url;
 #[macro_use]
@@ -45,22 +45,25 @@ async fn main() {
     //let mut connections : HashMap<&Exchange, &mut WebSocketStream<MaybeTlsStream<TcpStream>>> = HashMap::new();
     let mut order_books : HashMap<&str, OrderBook> = HashMap::new();
     let mut handles = vec![];
+    let mut exchanges : HashMap<&str, Box<dyn Exchange>> = HashMap::new();
 
     for ex_info in exchanges_info {
         if ex_info.is_enabled {
             //info!("Subscribing for {}", &ex.name);
-            let msgs = build_subscribe_msgs(&ex_info.name, &symbols);
+            let subscribe_msgs = exchanges.entry(&ex_info.name)
+                                                       .or_insert(build_exchange(&ex_info.name))
+                                                       .build_subscribe_msgs(&symbols);
 
-            if !msgs.is_empty() {
+            if !subscribe_msgs.is_empty() {
         
                 let (mut ws, _) = connect_async(
                     Url::parse(&ex_info.api_url).expect(&format!("Can't connect to {}", &ex_info.api_url)),
                 )
                 .await.unwrap();
                 
-                for m in &msgs {
+                for sub in &subscribe_msgs {
                     //info!("{}", m);
-                    ws.send(Message::Text(m.to_string())).await.unwrap();
+                    ws.send(Message::Text(sub.to_string())).await.unwrap();
                 }
 
                 let book = OrderBook::new();

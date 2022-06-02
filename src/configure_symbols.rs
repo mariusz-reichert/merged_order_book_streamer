@@ -22,26 +22,25 @@ struct Args {
 fn main() {
     env_logger::init();
     let args = Args::parse();
-    let exchanges = &read_config(&args.config_file).unwrap().exchanges;
+    let exchanges_info = &read_config(&args.config_file).unwrap().exchanges_info;
     let mut symbols = OpenOptions::new()
         .write(true)
         .truncate(true)
         .open(&args.symbols_file)
         .unwrap();
     let mut sym_count:HashMap<String, u32> = HashMap::new();
-    let mut enabled_exchanges = 0u32;
+    let mut enabled_counter = 0u32;
 
-    for ex in exchanges {
-        if ex.is_enabled {
-            enabled_exchanges += 1u32;
-            info!("Pulling symbols from {}", &ex.name);
-            let json = pull_symbols(&ex);
-            let symbols = parse_symbols(&ex.name, &json);
-    
-            for s in symbols {
+    for ex_info in exchanges_info {
+
+        if ex_info.is_enabled {
+            enabled_counter += 1u32;
+            info!("Pulling symbols from {}", &ex_info.name);
+            let json = pull_symbols(&ex_info.symbols_url);
+            for symbol in parse_symbols(&ex_info.name, &json) {
                 sym_count
-                    .entry(s)
-                    .and_modify(|c| *c += 1u32)
+                    .entry(symbol)
+                    .and_modify(|count| *count += 1u32)
                     .or_insert(1u32);
             }
         }
@@ -49,7 +48,7 @@ fn main() {
 
     info!("Writing symbols");
     for (ref sym, count) in sym_count.into_iter() {
-        if count == enabled_exchanges {
+        if count == enabled_counter {
             if let Err(e) = writeln!(symbols, "{}", sym) {
                 error!("Couldn't write to file: {}", e);
             }

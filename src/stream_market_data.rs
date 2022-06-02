@@ -24,7 +24,6 @@ struct Args {
 }
 
 async fn read_handle(mut ws: WebSocketStream<MaybeTlsStream<TcpStream>>) {
-    env_logger::init();
     info!("Spawned");
     while let Some(msg) = ws.next().await {
         let msg = msg.unwrap();
@@ -38,31 +37,36 @@ async fn read_handle(mut ws: WebSocketStream<MaybeTlsStream<TcpStream>>) {
 
 #[tokio::main]
 async fn main() {
-    //env_logger::init();
+    env_logger::init();
     
     let args = Args::parse();
-    let exchanges = &read_config(&args.config_file).unwrap().exchanges;
+    let exchanges_info = &read_config(&args.config_file).unwrap().exchanges_info;
     let symbols = load_symbols(&args.symbols_file);
     //let mut connections : HashMap<&Exchange, &mut WebSocketStream<MaybeTlsStream<TcpStream>>> = HashMap::new();
     let mut order_books : HashMap<&str, OrderBook> = HashMap::new();
     let mut handles = vec![];
 
-    for ex in exchanges {
-        if ex.is_enabled {
+    for ex_info in exchanges_info {
+        if ex_info.is_enabled {
             //info!("Subscribing for {}", &ex.name);
-            let msgs = build_subscribe_msgs(&ex, &symbols);
-            let book = OrderBook::new();
-            let (mut ws, _) = connect_async(
-                Url::parse(&ex.api_url).expect(&format!("Can't connect to {}", &ex.api_url)),
-            )
-            .await.unwrap();
-            
-            for m in &msgs {
-                //info!("{}", m);
-                ws.send(Message::Text(m.to_string())).await.unwrap();
-            }
+            let msgs = build_subscribe_msgs(&ex_info.name, &symbols);
 
-            handles.push(tokio::spawn(async move{ read_handle(ws).await; }));
+            if !msgs.is_empty() {
+        
+                let (mut ws, _) = connect_async(
+                    Url::parse(&ex_info.api_url).expect(&format!("Can't connect to {}", &ex_info.api_url)),
+                )
+                .await.unwrap();
+                
+                for m in &msgs {
+                    //info!("{}", m);
+                    ws.send(Message::Text(m.to_string())).await.unwrap();
+                }
+
+                let book = OrderBook::new();
+                handles.push(tokio::spawn(async move{ read_handle(ws).await; }));
+
+            }
 
             //connections.insert(&ex, &mut ws);
             // call api, track resp, read subscrine resp, build book, register read handler

@@ -1,32 +1,82 @@
 pub mod exchange {
     use std::cmp::{PartialEq, Eq};
     use std::hash::{Hash, Hasher};
+    use serde_json::Value;
     use serde::{Deserialize, Serialize};
 
+    pub trait Exchange {
+        fn parse_symbols(&self, json_source: &Value) -> Vec<String>;
+        fn build_subscribe_msgs(&self, symbols: &Vec<String>) -> Vec<String>;
+    }
+
     #[derive(Debug, Deserialize, Serialize)]
-    pub struct Exchange {
+    pub struct ExchangeInfo {
         pub name: String,
         pub is_enabled: bool,
         pub symbols_url:String,
         pub api_url: String
     }
 
-    impl Hash for Exchange {
+    impl Hash for ExchangeInfo {
         #[inline]
         fn hash<H: Hasher>(&self, hasher: &mut H) {
             self.name.hash(hasher);
         }
     }
 
-    impl PartialEq for Exchange {
+    impl PartialEq for ExchangeInfo {
         #[inline]
         fn eq(&self, other: &Self) -> bool {
             self.name == other.name
         }
     }
 
-    impl Eq for Exchange {}
+    impl Eq for ExchangeInfo {}
 
+    pub struct BinanceCom {
+    }
+
+    impl Exchange for BinanceCom {
+        fn parse_symbols(&self, json_source: &Value) -> Vec<String> {
+            let mut symbols = vec![];
+            for s in json_source.get("symbols").unwrap().as_array().unwrap() {
+                symbols.push(format!("{}{}", s.get("baseAsset").unwrap().as_str().unwrap().to_lowercase(), 
+                                             s.get("quoteAsset").unwrap().as_str().unwrap().to_lowercase()));
+            }
+            symbols
+        }
+        fn build_subscribe_msgs(&self, symbols: &Vec<String>) -> Vec<String> {
+            let mut subscribe_msgs = vec![];
+            let mut channels = String::new();
+            for s in symbols {
+                channels.push_str(format!("\"{}@depth20@100ms\",", s).as_str());
+            }
+            // remove trailing ','
+            channels.pop();
+            subscribe_msgs.push(format!("{{\"method\":\"SUBSCRIBE\",\"params\":[{}],\"id\":1}}", channels));
+            subscribe_msgs
+        }
+    }
+
+    pub struct Bitstamp {
+    }
+
+    impl Exchange for Bitstamp {
+        fn parse_symbols(&self, json_source: &Value) -> Vec<String> {
+            let mut symbols = vec![];
+            for s in json_source.as_array().unwrap() {
+                symbols.push(s.get("url_symbol").unwrap().as_str().unwrap().to_string());
+            }
+            symbols
+        }
+        fn build_subscribe_msgs(&self, symbols: &Vec<String>) -> Vec<String> {
+            let mut subscribe_msgs = vec![];
+            for s in symbols {
+                subscribe_msgs.push(format!("{{\"event\":\"bts:subscribe\",\"data\":{{\"channel\":\"order_book_{}\"}}}}", s));
+            }
+            subscribe_msgs
+        }
+    }
 }
 
 pub mod order_book {
@@ -122,13 +172,13 @@ pub mod config {
         io::{prelude::*, BufReader},
         path::Path,
     };
-    use crate::exchange::Exchange;
+    use crate::exchange::*;
     use serde_json::Value;
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Deserialize, Serialize)]
     pub struct Config {
-        pub exchanges: Vec<Exchange>
+        pub exchanges_info: Vec<ExchangeInfo>
     }
 
     pub fn read_config(path: &str) -> std::io::Result<Config> {
@@ -136,30 +186,9 @@ pub mod config {
         Ok(toml::from_str(&content)?)
     }
 
-    pub fn pull_symbols(exchange: & Exchange) -> Value {
-        let response = reqwest::blocking::get(&exchange.symbols_url).unwrap().text().unwrap();
+    pub fn pull_symbols(url: &str) -> Value {
+        let response = reqwest::blocking::get(url).unwrap().text().unwrap();
         serde_json::from_str(&response).unwrap()
-    }
-
-    // todo: rewrite it into traits
-    pub fn parse_symbols(ex_name: &str, json_source: &serde_json::Value) -> Vec<String> {
-        let mut result = Vec::new();
-        match ex_name {
-            "binance_com" => {
-                let symbols = json_source.get("symbols").unwrap().as_array().unwrap();
-                for s in symbols {
-                    result.push(format!("{}{}", s.get("baseAsset").unwrap().as_str().unwrap().to_lowercase(), s.get("quoteAsset").unwrap().as_str().unwrap().to_lowercase()));
-                }
-            },
-            "bitstamp" => {
-                let symbols = json_source.as_array().unwrap();
-                for s in symbols {
-                    result.push(s.get("url_symbol").unwrap().as_str().unwrap().to_string());
-                }
-            },
-            _ => {}
-        }
-        result
     }
 
     pub fn load_symbols(filename: impl AsRef<Path>) -> Vec<String> {
@@ -170,30 +199,20 @@ pub mod config {
             .collect()
     }
 
-    // todo: rewrite it into traits
-    pub fn build_subscribe_msgs(ex: &Exchange, symbols: &Vec<String>) -> Vec<String> {
-        let mut subscribe_msgs : Vec<String> = Vec::new();
-        match &ex.name[..] {
-            "binance_com" => {
-                let mut channels = String::new();
-                for s in symbols {
-                    channels.push_str(format!("\"{}@depth20@100ms\",", &s).as_str());
-                }
-                // remove trailing ','
-                channels.pop();
-                subscribe_msgs.push(format!("{{\"method\":\"SUBSCRIBE\",\"params\":[{}],\"id\":1}}", channels));
-            },
-            "bitstamp" => {
-                for s in symbols {
-                    subscribe_msgs.push(format!("{{\"event\":\"bts:subscribe\",\"data\":{{\"channel\":\"order_book_{}\"}}}}", &s));
-                }
-            },
-            _ => { }
+    pub fn parse_symbols(exchange_name: &str, json: &Value) -> Vec<String> {
+        match exchange_name {
+            "binance_com" => BinanceCom{}.parse_symbols(&json),
+            "bitstamp" => Bitstamp{}.parse_symbols(&json),
+            _ => Vec::<String>::new()
         }
-        subscribe_msgs
     }
-    
- 
 
+    pub fn build_subscribe_msgs(exchange_name: &str, symbols: &Vec<String>) -> Vec<String> {
+        match exchange_name {
+            "binance_com" => BinanceCom{}.build_subscribe_msgs(&symbols),
+            "bitstamp" => Bitstamp{}.build_subscribe_msgs(&symbols),
+            _ => Vec::<String>::new()
+        }
+    }
 }
 

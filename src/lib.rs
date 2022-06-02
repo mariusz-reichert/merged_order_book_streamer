@@ -170,10 +170,11 @@ pub mod order_book {
 
     impl<'a> PartialOrd for AskPriceLevel<'a> {
         fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-            match self.data.price.cmp(&other.data.price) {
-                Ordering::Less => Some(Ordering::Greater),
-                Ordering::Equal => Some(self.data.qty.cmp(&other.data.qty)),
-                Ordering::Greater => Some(Ordering::Less)
+            match self.data.price.partial_cmp(&other.data.price) {
+                Some(Ordering::Less) => Some(Ordering::Greater),
+                Some(Ordering::Equal) => self.data.qty.partial_cmp(&other.data.qty),
+                Some(Ordering::Greater) => Some(Ordering::Less),
+                None => None
             }
         }
     }

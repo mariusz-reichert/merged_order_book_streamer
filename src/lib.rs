@@ -102,6 +102,41 @@ pub mod exchange {
     }
 }
 
+pub mod config {
+
+    use std::{
+        fs::File,
+        io::{prelude::*, BufReader},
+        path::Path,
+    };
+    use crate::exchange::ExchangeInfo;
+    use serde_json::Value;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Deserialize, Serialize)]
+    pub struct Config {
+        pub exchanges_info: Vec<ExchangeInfo>
+    }
+
+    pub fn read_config(path: &str) -> std::io::Result<Config> {
+        let content = std::fs::read_to_string(path)?;
+        Ok(toml::from_str(&content)?)
+    }
+
+    pub fn pull_symbols(url: &str) -> Value {
+        let response = reqwest::blocking::get(url).unwrap().text().unwrap();
+        serde_json::from_str(&response).unwrap()
+    }
+
+    pub fn load_symbols(filename: impl AsRef<Path>) -> Vec<String> {
+        let file = File::open(filename).expect("No such file");
+        let buf = BufReader::new(file);
+        buf.lines()
+            .map(|l| l.expect("Could not parse line"))
+            .collect()
+    }
+}
+
 pub mod order_book {
     use std::cmp::{Ordering, Ord, PartialOrd, PartialEq, Eq};
     use rust_decimal::Decimal;
@@ -109,41 +144,41 @@ pub mod order_book {
 
     const TOP_K: usize = 10;
 
-    #[derive(Eq, PartialEq, PartialOrd, Ord, Clone)]
+    #[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Clone)]
     pub struct PriceLevel<'a> {
         pub price: Decimal,
         pub qty: Decimal,
-        pub exchange: &'a str
+        pub exchange_name: &'a str,
     }
 
-    #[derive(Eq, PartialEq, PartialOrd)]
+    #[derive(Debug, Eq, PartialEq, Ord)]
     pub struct BidPriceLevel<'a> {
         pub data: PriceLevel<'a>
     }
 
-    impl<'a> Ord for BidPriceLevel<'a> {
+    impl<'a> PartialOrd for BidPriceLevel<'a> {
         #[inline]
-        fn cmp(&self, other: &Self) -> Ordering {
-            (self.data.price, self.data.qty).cmp(&(other.data.price, other.data.qty))
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            (self.data.price, self.data.qty).partial_cmp(&(other.data.price, other.data.qty))
         }
     }
 
-    #[derive(Eq, PartialEq, PartialOrd)]
+    #[derive(Debug, Eq, PartialEq, Ord)]
     pub struct AskPriceLevel<'a> {
         pub data: PriceLevel<'a>
     }
 
-    impl<'a> Ord for AskPriceLevel<'a> {
-        #[inline]
-        fn cmp(&self, other: &Self) -> Ordering {
+    impl<'a> PartialOrd for AskPriceLevel<'a> {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
             match self.data.price.cmp(&other.data.price) {
-                Ordering::Less => Ordering::Greater,
-                Ordering::Equal => self.data.qty.cmp(&other.data.qty),
-                Ordering::Greater => Ordering::Less
+                Ordering::Less => Some(Ordering::Greater),
+                Ordering::Equal => Some(self.data.qty.cmp(&other.data.qty)),
+                Ordering::Greater => Some(Ordering::Less)
             }
         }
     }
 
+    #[derive(Debug)]
     pub struct OrderBook<'a> {
         pub bids: BinaryHeap<BidPriceLevel<'a>>,
         pub asks: BinaryHeap<AskPriceLevel<'a>>
@@ -154,7 +189,7 @@ pub mod order_book {
             OrderBook{bids: BinaryHeap::new(), asks: BinaryHeap::new()}
         }
 
-        fn keep_top_k(&mut self, k: usize) {
+        pub fn keep_top_k(&mut self, k: usize) {
             
             if self.bids.len() > k {
                 let mut tmp = BinaryHeap::new();
@@ -188,38 +223,75 @@ pub mod order_book {
     }
 }
 
-pub mod config {
+#[cfg(test)]
+mod tests {
+    use super::order_book::*;
+    use rust_decimal_macros::dec;
 
-    use std::{
-        fs::File,
-        io::{prelude::*, BufReader},
-        path::Path,
-    };
-    use crate::exchange::*;
-    use serde_json::Value;
-    use serde::{Deserialize, Serialize};
+    #[test]
+    fn test_order_book_sides_are_sorted_properly() {
+        let binance_com = "binance_com";
+        let bitstamp = "bitstamp";
+        let mut ob = OrderBook::new();
+        ob.add_price_levels(
+            &vec![
+                PriceLevel{price: dec!(7), qty: dec!(3), exchange_name: bitstamp},
+                PriceLevel{price: dec!(8), qty: dec!(10), exchange_name: binance_com},
+                PriceLevel{price: dec!(7), qty: dec!(1), exchange_name: binance_com}],
+            &vec![
+                PriceLevel{price: dec!(10), qty: dec!(2), exchange_name: bitstamp},
+                PriceLevel{price: dec!(10), qty: dec!(4), exchange_name: binance_com},
+                PriceLevel{price: dec!(9), qty: dec!(3), exchange_name: bitstamp},
+                PriceLevel{price: dec!(11), qty: dec!(5), exchange_name: bitstamp},
+                PriceLevel{price: dec!(11), qty: dec!(5), exchange_name: binance_com}]);
 
-    #[derive(Debug, Deserialize, Serialize)]
-    pub struct Config {
-        pub exchanges_info: Vec<ExchangeInfo>
+        // following asserts will ensure this rules are fulfilled:
+        // - for bids price level with biggest price is on top
+        // - for asks price level with lowest price is on top
+        // - within price levels of same price the price level with biggest qty is on top
+        // - within price level of same price and qty the price level that was added first is on top
+
+        assert_eq!(ob.bids.len(), 3);
+        assert_eq!(ob.bids.pop().unwrap().data, PriceLevel{price: dec!(8), qty: dec!(10), exchange_name: binance_com});
+        assert_eq!(ob.bids.pop().unwrap().data, PriceLevel{price: dec!(7), qty: dec!(3), exchange_name: bitstamp});
+        assert_eq!(ob.bids.pop().unwrap().data, PriceLevel{price: dec!(7), qty: dec!(1), exchange_name: binance_com});
+        assert_eq!(ob.bids.len(), 0);
+
+        assert_eq!(ob.asks.len(), 5);
+        assert_eq!(ob.asks.pop().unwrap().data, PriceLevel{price: dec!(9), qty: dec!(3), exchange_name: bitstamp});
+        assert_eq!(ob.asks.pop().unwrap().data, PriceLevel{price: dec!(10), qty: dec!(4), exchange_name: binance_com});
+        assert_eq!(ob.asks.pop().unwrap().data, PriceLevel{price: dec!(10), qty: dec!(2), exchange_name: bitstamp});
+        assert_eq!(ob.asks.pop().unwrap().data, PriceLevel{price: dec!(11), qty: dec!(5), exchange_name: bitstamp});
+        assert_eq!(ob.asks.pop().unwrap().data, PriceLevel{price: dec!(11), qty: dec!(5), exchange_name: binance_com});
+        assert_eq!(ob.asks.len(), 0);
+        
     }
 
-    pub fn read_config(path: &str) -> std::io::Result<Config> {
-        let content = std::fs::read_to_string(path)?;
-        Ok(toml::from_str(&content)?)
-    }
+    #[test]
+    fn test_order_book_only_top_k_price_levels_are_kept() {
+        let binance_com = "binance_com";
+        let bitstamp = "bitstamp";
+        let mut ob = OrderBook::new();
+        ob.add_price_levels(
+            &vec![
+                PriceLevel{price: dec!(7), qty: dec!(1), exchange_name: bitstamp},
+                PriceLevel{price: dec!(8), qty: dec!(10), exchange_name: binance_com},
+                PriceLevel{price: dec!(7), qty: dec!(3), exchange_name: binance_com}],
+            &vec![
+                PriceLevel{price: dec!(10), qty: dec!(2), exchange_name: bitstamp},
+                PriceLevel{price: dec!(10), qty: dec!(4), exchange_name: binance_com},
+                PriceLevel{price: dec!(9), qty: dec!(3), exchange_name: bitstamp}]);
 
-    pub fn pull_symbols(url: &str) -> Value {
-        let response = reqwest::blocking::get(url).unwrap().text().unwrap();
-        serde_json::from_str(&response).unwrap()
-    }
+        ob.keep_top_k(2);
+        
+        assert_eq!(ob.bids.len(), 2);
+        assert_eq!(ob.bids.pop().unwrap().data, PriceLevel{price: dec!(8), qty: dec!(10), exchange_name: binance_com});
+        assert_eq!(ob.bids.pop().unwrap().data, PriceLevel{price: dec!(7), qty: dec!(3), exchange_name: binance_com});
+        assert_eq!(ob.bids.len(), 0);
 
-    pub fn load_symbols(filename: impl AsRef<Path>) -> Vec<String> {
-        let file = File::open(filename).expect("No such file");
-        let buf = BufReader::new(file);
-        buf.lines()
-            .map(|l| l.expect("Could not parse line"))
-            .collect()
+        assert_eq!(ob.asks.len(), 2);
+        assert_eq!(ob.asks.pop().unwrap().data, PriceLevel{price: dec!(9), qty: dec!(3), exchange_name: bitstamp});
+        assert_eq!(ob.asks.pop().unwrap().data, PriceLevel{price: dec!(10), qty: dec!(4), exchange_name: binance_com});
+        assert_eq!(ob.asks.len(), 0);
     }
 }
-

@@ -66,7 +66,6 @@ async fn main() {
                     ws.send(Message::Text(sub.to_string())).await.unwrap();
                 }
 
-                let book = OrderBook::new();
                 handles.push(tokio::spawn(async move{ read_handle(ws).await; }));
 
             }

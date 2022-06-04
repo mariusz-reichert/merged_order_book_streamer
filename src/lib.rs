@@ -140,35 +140,42 @@ pub mod config {
 pub mod order_book {
     use std::cmp::{Ordering, Ord, PartialOrd, PartialEq, Eq};
     use rust_decimal::Decimal;
+    use rust_decimal::prelude::*;
     use std::collections::BinaryHeap;
 
     const TOP_K: usize = 10;
 
-    #[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Clone)]
-    pub struct PriceLevel<'a> {
+    #[derive(Debug)]
+    pub struct RawLevel<'a> {
+        pub price: &'a str,
+        pub qty: &'a str
+    }
+
+    #[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Clone, Hash, Copy)]
+    pub struct Level<'a> {
         pub price: Decimal,
         pub qty: Decimal,
         pub exchange_name: &'a str,
     }
 
-    #[derive(Debug, Eq, PartialEq, Ord)]
-    pub struct BidPriceLevel<'a> {
-        pub data: PriceLevel<'a>
+    #[derive(Debug, Eq, PartialEq, Ord, Clone, Hash, Copy)]
+    pub struct BidLevel<'a> {
+        pub data: Level<'a>
     }
 
-    impl<'a> PartialOrd for BidPriceLevel<'a> {
+    impl<'a> PartialOrd for BidLevel<'a> {
         #[inline]
         fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
             (self.data.price, self.data.qty).partial_cmp(&(other.data.price, other.data.qty))
         }
     }
 
-    #[derive(Debug, Eq, PartialEq, Ord)]
-    pub struct AskPriceLevel<'a> {
-        pub data: PriceLevel<'a>
+    #[derive(Debug, Eq, PartialEq, Ord, Clone, Hash, Copy)]
+    pub struct AskLevel<'a> {
+        pub data: Level<'a>
     }
 
-    impl<'a> PartialOrd for AskPriceLevel<'a> {
+    impl<'a> PartialOrd for AskLevel<'a> {
         fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
             match self.data.price.partial_cmp(&other.data.price) {
                 Some(Ordering::Less) => Some(Ordering::Greater),
@@ -180,17 +187,25 @@ pub mod order_book {
     }
 
     #[derive(Debug)]
-    pub struct OrderBook<'a> {
-        pub bids: BinaryHeap<BidPriceLevel<'a>>,
-        pub asks: BinaryHeap<AskPriceLevel<'a>>
+    pub struct MergedOrderBook<'a> {
+        // it's overkill for just 2 exchanges to use max/min heap for sorting levels
+        // because algorithm for sorting of two sorted arrays could be use, however 
+        // if more exchnges would be merged then max/min heap is optimal for sorting k sorted arrays
+        bids: BinaryHeap<BidLevel<'a>>,
+        asks: BinaryHeap<AskLevel<'a>>
     }
 
-    impl<'a> OrderBook<'a> {
-        pub fn new() -> OrderBook<'a> {
-            OrderBook{bids: BinaryHeap::new(), asks: BinaryHeap::new()}
+    impl<'a> MergedOrderBook<'a> {
+        pub fn new() -> MergedOrderBook<'a> {
+            MergedOrderBook{bids: BinaryHeap::new(), asks: BinaryHeap::new()}
         }
 
-        pub fn keep_top_k(&mut self, k: usize) {
+        pub fn clear(&mut self) {
+            self.bids.clear();
+            self.asks.clear();
+        }
+
+        fn keep_top_k(&mut self, k: usize) {
             
             if self.bids.len() > k {
                 let mut tmp = BinaryHeap::new();
@@ -209,17 +224,59 @@ pub mod order_book {
             }
         }
 
-        pub fn add_price_levels(
+        pub fn merge_snapshot(
                 &mut self, 
-                new_bids: &Vec<PriceLevel<'a>>,
-                new_asks: &Vec<PriceLevel<'a>>) {
-            for b in new_bids {
-                self.bids.push(BidPriceLevel{data: b.clone()});
+                snapshot: &'a OrderBookSnapshot) {
+            
+            // this should be ensured at parser level
+            assert!(snapshot.bids.len() <= TOP_K);
+            assert!(snapshot.asks.len() <= TOP_K);
+
+            for b in &snapshot.bids {
+                self.bids.push(BidLevel{data: Level{price: Decimal::from_str(b.price).unwrap(), 
+                                                          qty: Decimal::from_str(b.qty).unwrap(), 
+                                                          exchange_name: snapshot.exchange_name}});
             }
-            for a in new_asks {
-                self.asks.push(AskPriceLevel{data: a.clone()});
+            for a in &snapshot.asks {
+                self.asks.push(AskLevel{data: Level{price: Decimal::from_str(a.price).unwrap(), 
+                                                          qty: Decimal::from_str(a.qty).unwrap(), 
+                                                          exchange_name: snapshot.exchange_name}});
             }
             self.keep_top_k(TOP_K);
+        }
+
+        pub fn drain_sorted_bids(&mut self) -> Vec<Level<'_>> {
+            let mut result = vec![];
+            result.reserve(self.bids.len());
+
+            while !self.bids.is_empty() {
+                result.push(self.bids.pop().unwrap().data);
+            }
+            result
+        }
+
+        pub fn drain_sorted_asks(&mut self) -> Vec<Level<'_>> {
+            let mut result = vec![];
+            result.reserve(self.asks.len());
+
+            while !self.asks.is_empty() {
+                result.push(self.asks.pop().unwrap().data);
+            }
+            result
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct OrderBookSnapshot<'a> {
+        // assumption: order book snapshots from exchagnes have data already sorted
+        pub bids: Vec<RawLevel<'a>>,
+        pub asks: Vec<RawLevel<'a>>,
+        pub exchange_name: &'a str
+    }
+
+    impl<'a> OrderBookSnapshot<'a> {
+        pub fn new() -> OrderBookSnapshot<'a> {
+            OrderBookSnapshot{bids: vec![], asks: vec![], exchange_name: ""}
         }
     }
 }
@@ -230,69 +287,152 @@ mod tests {
     use rust_decimal_macros::dec;
 
     #[test]
-    fn test_order_book_sides_are_sorted_properly() {
-        let binance_com = "binance_com";
+    fn test_merged_order_book_empty_snapshot_gives_nothing_merged() {
         let bitstamp = "bitstamp";
-        let mut ob = OrderBook::new();
-        ob.add_price_levels(
-            &vec![
-                PriceLevel{price: dec!(7), qty: dec!(3), exchange_name: bitstamp},
-                PriceLevel{price: dec!(8), qty: dec!(10), exchange_name: binance_com},
-                PriceLevel{price: dec!(7), qty: dec!(1), exchange_name: binance_com}],
-            &vec![
-                PriceLevel{price: dec!(10), qty: dec!(2), exchange_name: bitstamp},
-                PriceLevel{price: dec!(10), qty: dec!(4), exchange_name: binance_com},
-                PriceLevel{price: dec!(9), qty: dec!(3), exchange_name: bitstamp},
-                PriceLevel{price: dec!(11), qty: dec!(5), exchange_name: bitstamp},
-                PriceLevel{price: dec!(11), qty: dec!(5), exchange_name: binance_com}]);
+        let mut mob = MergedOrderBook::new();
+        let snap1 = OrderBookSnapshot{bids: vec![], asks: vec![], exchange_name: bitstamp};
+        mob.merge_snapshot(&snap1);
 
-        // following asserts will ensure this rules are fulfilled:
-        // - for bids price level with biggest price is on top
-        // - for asks price level with lowest price is on top
-        // - within price levels of same price the price level with biggest qty is on top
-        // - within price level of same price and qty the price level that was added first is on top
-
-        assert_eq!(ob.bids.len(), 3);
-        assert_eq!(ob.bids.pop().unwrap().data, PriceLevel{price: dec!(8), qty: dec!(10), exchange_name: binance_com});
-        assert_eq!(ob.bids.pop().unwrap().data, PriceLevel{price: dec!(7), qty: dec!(3), exchange_name: bitstamp});
-        assert_eq!(ob.bids.pop().unwrap().data, PriceLevel{price: dec!(7), qty: dec!(1), exchange_name: binance_com});
-        assert_eq!(ob.bids.len(), 0);
-
-        assert_eq!(ob.asks.len(), 5);
-        assert_eq!(ob.asks.pop().unwrap().data, PriceLevel{price: dec!(9), qty: dec!(3), exchange_name: bitstamp});
-        assert_eq!(ob.asks.pop().unwrap().data, PriceLevel{price: dec!(10), qty: dec!(4), exchange_name: binance_com});
-        assert_eq!(ob.asks.pop().unwrap().data, PriceLevel{price: dec!(10), qty: dec!(2), exchange_name: bitstamp});
-        assert_eq!(ob.asks.pop().unwrap().data, PriceLevel{price: dec!(11), qty: dec!(5), exchange_name: bitstamp});
-        assert_eq!(ob.asks.pop().unwrap().data, PriceLevel{price: dec!(11), qty: dec!(5), exchange_name: binance_com});
-        assert_eq!(ob.asks.len(), 0);
-        
+        assert_eq!(mob.drain_sorted_bids(), vec![]);
+        assert_eq!(mob.drain_sorted_asks(), vec![]);
     }
 
     #[test]
-    fn test_order_book_only_top_k_price_levels_are_kept() {
-        let binance_com = "binance_com";
+    fn test_merged_order_book_single_snapshot_gives_itself_back() {
         let bitstamp = "bitstamp";
-        let mut ob = OrderBook::new();
-        ob.add_price_levels(
-            &vec![
-                PriceLevel{price: dec!(7), qty: dec!(1), exchange_name: bitstamp},
-                PriceLevel{price: dec!(8), qty: dec!(10), exchange_name: binance_com},
-                PriceLevel{price: dec!(7), qty: dec!(3), exchange_name: binance_com}],
-            &vec![
-                PriceLevel{price: dec!(10), qty: dec!(2), exchange_name: bitstamp},
-                PriceLevel{price: dec!(10), qty: dec!(4), exchange_name: binance_com},
-                PriceLevel{price: dec!(9), qty: dec!(3), exchange_name: bitstamp}]);
+        let mut mob = MergedOrderBook::new();
+        let snap1 = OrderBookSnapshot{
+            bids: vec![RawLevel{price: "10", qty: "1"},
+                       RawLevel{price: "9", qty: "1"},
+                       RawLevel{price: "8", qty: "1"},
+                       RawLevel{price: "7", qty: "1"},
+                       RawLevel{price: "6", qty: "1"},
+                       RawLevel{price: "5", qty: "1"},
+                       RawLevel{price: "4", qty: "1"},
+                       RawLevel{price: "3", qty: "1"},
+                       RawLevel{price: "2", qty: "1"},
+                       RawLevel{price: "1", qty: "1"}], 
+            asks: vec![RawLevel{price: "11", qty: "1"},
+                       RawLevel{price: "12", qty: "1"},
+                       RawLevel{price: "13", qty: "1"},
+                       RawLevel{price: "14", qty: "1"},
+                       RawLevel{price: "15", qty: "1"},
+                       RawLevel{price: "16", qty: "1"},
+                       RawLevel{price: "17", qty: "1"},
+                       RawLevel{price: "18", qty: "1"},
+                       RawLevel{price: "19", qty: "1"},
+                       RawLevel{price: "20", qty: "1"}], 
+            exchange_name: bitstamp};
+        mob.merge_snapshot(&snap1);   
 
-        ob.keep_top_k(2);
-        
-        assert_eq!(ob.bids.len(), 2);
-        assert_eq!(ob.bids.pop().unwrap().data, PriceLevel{price: dec!(8), qty: dec!(10), exchange_name: binance_com});
-        assert_eq!(ob.bids.pop().unwrap().data, PriceLevel{price: dec!(7), qty: dec!(3), exchange_name: binance_com});
-        assert_eq!(ob.bids.len(), 0);
+        assert_eq!(mob.drain_sorted_bids(), vec![
+            Level{price: dec!(10), qty: dec!(1), exchange_name: bitstamp},
+            Level{price: dec!(9), qty: dec!(1), exchange_name: bitstamp},
+            Level{price: dec!(8), qty: dec!(1), exchange_name: bitstamp},
+            Level{price: dec!(7), qty: dec!(1), exchange_name: bitstamp},
+            Level{price: dec!(6), qty: dec!(1), exchange_name: bitstamp},
+            Level{price: dec!(5), qty: dec!(1), exchange_name: bitstamp},
+            Level{price: dec!(4), qty: dec!(1), exchange_name: bitstamp},
+            Level{price: dec!(3), qty: dec!(1), exchange_name: bitstamp},
+            Level{price: dec!(2), qty: dec!(1), exchange_name: bitstamp},
+            Level{price: dec!(1), qty: dec!(1), exchange_name: bitstamp}]);
+        assert_eq!(mob.drain_sorted_asks(), vec![
+            Level{price: dec!(11), qty: dec!(1), exchange_name: bitstamp},
+            Level{price: dec!(12), qty: dec!(1), exchange_name: bitstamp},
+            Level{price: dec!(13), qty: dec!(1), exchange_name: bitstamp},
+            Level{price: dec!(14), qty: dec!(1), exchange_name: bitstamp},
+            Level{price: dec!(15), qty: dec!(1), exchange_name: bitstamp},
+            Level{price: dec!(16), qty: dec!(1), exchange_name: bitstamp},
+            Level{price: dec!(17), qty: dec!(1), exchange_name: bitstamp},
+            Level{price: dec!(18), qty: dec!(1), exchange_name: bitstamp},
+            Level{price: dec!(19), qty: dec!(1), exchange_name: bitstamp},
+            Level{price: dec!(20), qty: dec!(1), exchange_name: bitstamp}]);
+    }
 
-        assert_eq!(ob.asks.len(), 2);
-        assert_eq!(ob.asks.pop().unwrap().data, PriceLevel{price: dec!(9), qty: dec!(3), exchange_name: bitstamp});
-        assert_eq!(ob.asks.pop().unwrap().data, PriceLevel{price: dec!(10), qty: dec!(4), exchange_name: binance_com});
-        assert_eq!(ob.asks.len(), 0);
+    #[test]
+    fn test_merged_order_book_multiple_snapshots_merged_sorted_and_capped() {
+        let bitstamp = "bitstamp";
+        let binance_com = "binance_com";
+        let mut mob = MergedOrderBook::new();
+        let snap1 = OrderBookSnapshot{
+            bids: vec![RawLevel{price: "10", qty: "1"},
+                       RawLevel{price: "9", qty: "1"},
+                       RawLevel{price: "8", qty: "1"},
+                       RawLevel{price: "7", qty: "1"},
+                       RawLevel{price: "6", qty: "1"},
+                       RawLevel{price: "5", qty: "1"},
+                       RawLevel{price: "4", qty: "1"},
+                       RawLevel{price: "3", qty: "1"},
+                       RawLevel{price: "2", qty: "1"},
+                       RawLevel{price: "1", qty: "1"}], 
+            asks: vec![RawLevel{price: "11", qty: "1"},
+                       RawLevel{price: "12", qty: "1"},
+                       RawLevel{price: "13", qty: "1"},
+                       RawLevel{price: "14", qty: "1"},
+                       RawLevel{price: "15", qty: "1"},
+                       RawLevel{price: "16", qty: "1"},
+                       RawLevel{price: "17", qty: "1"},
+                       RawLevel{price: "18", qty: "1"},
+                       RawLevel{price: "19", qty: "1"},
+                       RawLevel{price: "20", qty: "1"}], 
+            exchange_name: bitstamp};
+
+        mob.merge_snapshot(&snap1);   
+
+        let snap2 = OrderBookSnapshot{
+            bids: vec![RawLevel{price: "10", qty: "2"},
+                        RawLevel{price: "9", qty: "2"},
+                        RawLevel{price: "8", qty: "2"},
+                        RawLevel{price: "7", qty: "2"},
+                        RawLevel{price: "6", qty: "1"},
+                        RawLevel{price: "5", qty: "2"},
+                        RawLevel{price: "4", qty: "2"},
+                        RawLevel{price: "3", qty: "2"},
+                        RawLevel{price: "2", qty: "2"},
+                        RawLevel{price: "1", qty: "2"}], 
+            asks: vec![RawLevel{price: "11", qty: "2"},
+                        RawLevel{price: "12", qty: "2"},
+                        RawLevel{price: "13", qty: "2"},
+                        RawLevel{price: "14", qty: "2"},
+                        RawLevel{price: "15", qty: "2"},
+                        RawLevel{price: "16", qty: "2"},
+                        RawLevel{price: "17", qty: "2"},
+                        RawLevel{price: "18", qty: "2"},
+                        RawLevel{price: "19", qty: "2"},
+                        RawLevel{price: "20", qty: "2"}], 
+            exchange_name: binance_com};
+
+            mob.merge_snapshot(&snap2);
+
+            // following checks are made here:
+            // - for bids the price level with biggest price is on top
+            // - for asks the price level with lowest price is on top
+            // - for price levels with same price the price level with biggest qty is closer to top
+            // - for price levels with same price and qty the price level that was added first is closer to top
+            assert_eq!(mob.drain_sorted_bids(), vec![
+                Level{price: dec!(10), qty: dec!(2), exchange_name: binance_com},
+                Level{price: dec!(10), qty: dec!(1), exchange_name: bitstamp},
+                Level{price: dec!(9), qty: dec!(2), exchange_name: binance_com},
+                Level{price: dec!(9), qty: dec!(1), exchange_name: bitstamp},
+                Level{price: dec!(8), qty: dec!(2), exchange_name: binance_com},
+                Level{price: dec!(8), qty: dec!(1), exchange_name: bitstamp},
+                Level{price: dec!(7), qty: dec!(2), exchange_name: binance_com},
+                Level{price: dec!(7), qty: dec!(1), exchange_name: bitstamp},
+                Level{price: dec!(6), qty: dec!(1), exchange_name: bitstamp},
+                Level{price: dec!(6), qty: dec!(1), exchange_name: binance_com}]);
+            assert_eq!(mob.drain_sorted_asks(), vec![
+                Level{price: dec!(11), qty: dec!(2), exchange_name: binance_com},
+                Level{price: dec!(11), qty: dec!(1), exchange_name: bitstamp},
+                Level{price: dec!(12), qty: dec!(2), exchange_name: binance_com},
+                Level{price: dec!(12), qty: dec!(1), exchange_name: bitstamp},
+                Level{price: dec!(13), qty: dec!(2), exchange_name: binance_com},
+                Level{price: dec!(13), qty: dec!(1), exchange_name: bitstamp},
+                Level{price: dec!(14), qty: dec!(2), exchange_name: binance_com},
+                Level{price: dec!(14), qty: dec!(1), exchange_name: bitstamp},
+                Level{price: dec!(15), qty: dec!(2), exchange_name: binance_com},
+                Level{price: dec!(15), qty: dec!(1), exchange_name: bitstamp}]);
+
+            assert_eq!(mob.drain_sorted_bids(), vec![]);
+            assert_eq!(mob.drain_sorted_asks(), vec![]);
     }
 }

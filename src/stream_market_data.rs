@@ -1,5 +1,5 @@
 use rock::config::{read_config, load_symbols};
-use rock::order_book::OrderBook;
+use rock::order_book::MergedOrderBook;
 use rock::exchange::{Exchange, build_exchange};
 use clap::Parser;
 use std::collections::HashMap;
@@ -43,7 +43,7 @@ async fn main() {
     let exchanges_info = &read_config(&args.config_file).unwrap().exchanges_info;
     let symbols = load_symbols(&args.symbols_file);
     //let mut connections : HashMap<&Exchange, &mut WebSocketStream<MaybeTlsStream<TcpStream>>> = HashMap::new();
-    let mut order_books : HashMap<&str, OrderBook> = HashMap::new();
+    //let mut order_books : HashMap<&str, OrderBook> = HashMap::new();
     let mut handles = vec![];
     let mut exchanges : HashMap<&str, Box<dyn Exchange>> = HashMap::new();
 

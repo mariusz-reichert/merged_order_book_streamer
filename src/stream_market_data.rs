@@ -1,5 +1,5 @@
 use rock::config::{read_config, load_symbols};
-use rock::order_book::MergedOrderBook;
+use rock::order_book::{MergedOrderBook, OrderBookSnapshot};
 use rock::exchange::{Exchange, build_exchange};
 use clap::Parser;
 use std::collections::HashMap;
@@ -7,6 +7,8 @@ use tokio_tungstenite::{WebSocketStream, MaybeTlsStream, connect_async, tungsten
 use futures_util::{StreamExt, SinkExt};
 use tokio::net::TcpStream;
 use url::Url;
+use serde_json::Value;
+use std::sync::{Arc, Mutex};
 #[macro_use]
 extern crate log;
 
@@ -23,13 +25,24 @@ struct Args {
     symbols_file: String,
 }
 
-async fn read_handle(mut ws: WebSocketStream<MaybeTlsStream<TcpStream>>) {
+async fn ws_reader(mut ws: WebSocketStream<MaybeTlsStream<TcpStream>>, exchange: Arc<dyn Exchange + Send + Sync>) 
+{
     info!("Spawned");
     while let Some(msg) = ws.next().await {
         let msg = msg.unwrap();
         if msg.is_text() {
-            info!("Got:\n{}", msg);
-            //ws.send(msg).await.unwrap();
+            
+            let json: Value = serde_json::from_str(&msg.to_text().unwrap()).unwrap();
+            let p = exchange.parse_snapshot(&json);
+            match p {
+                Some(v) => info!("Snap:\n{:?}", v),
+                None => ()
+            }
+            
+            // update proper snapshot
+            // calculate merged orderbook
+            // propagate to grpc server
+
         }
     }
     info!("Nothing");
@@ -42,16 +55,18 @@ async fn main() {
     let args = Args::parse();
     let exchanges_info = &read_config(&args.config_file).unwrap().exchanges_info;
     let symbols = load_symbols(&args.symbols_file);
-    //let mut connections : HashMap<&Exchange, &mut WebSocketStream<MaybeTlsStream<TcpStream>>> = HashMap::new();
-    //let mut order_books : HashMap<&str, OrderBook> = HashMap::new();
-    let mut handles = vec![];
-    let mut exchanges : HashMap<&str, Box<dyn Exchange>> = HashMap::new();
 
+    //let mut connections : HashMap<&str, &mut WebSocketStream<MaybeTlsStream<TcpStream>>> = HashMap::new();
+    let mut snapshots : HashMap<&str, OrderBookSnapshot> = HashMap::new();
+    let mut handles = vec![];
+    let mut exchanges : HashMap<&str, Arc<dyn Exchange + Send + Sync>> = HashMap::new();
+
+    // todo: properly handle option values instead of unwrap
     for ex_info in exchanges_info {
         if ex_info.is_enabled {
             //info!("Subscribing for {}", &ex.name);
-            let subscribe_msgs = exchanges.entry(&ex_info.name)
-                                                       .or_insert(build_exchange(&ex_info.name))
+            let subscribe_msgs = exchanges.entry(&ex_info.name.as_str())
+                                                       .or_insert(build_exchange(&ex_info.name.as_str()).unwrap())
                                                        .build_subscribe_msgs(&symbols);
 
             if !subscribe_msgs.is_empty() {
@@ -64,9 +79,11 @@ async fn main() {
                 for sub in &subscribe_msgs {
                     //info!("{}", m);
                     ws.send(Message::Text(sub.to_string())).await.unwrap();
+                    // todo: handle failed subscriptions
                 }
-
-                handles.push(tokio::spawn(async move{ read_handle(ws).await; }));
+            
+                let ex = build_exchange(&ex_info.name.as_str()).unwrap();
+                handles.push(tokio::spawn(async move{ ws_reader(ws, ex).await; }));
 
             }
 

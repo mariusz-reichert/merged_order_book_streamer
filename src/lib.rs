@@ -3,11 +3,11 @@ pub mod exchange {
     use std::hash::{Hash, Hasher};
     use serde_json::Value;
     use serde::{Deserialize, Serialize};
-
-    pub trait Exchange {
-        fn parse_symbols(&self, json_source: &Value) -> Vec<String>;
-        fn build_subscribe_msgs(&self, symbols: &Vec<String>) -> Vec<String>;
-    }
+    use crate::order_book::OrderBookSnapshot;
+    use std::sync::Arc;
+    use rust_decimal::Decimal;
+    use rust_decimal::prelude::*;
+    use crate::order_book::TOP_K;
 
     #[derive(Debug, Deserialize, Serialize)]
     pub struct ExchangeInfo {
@@ -33,13 +33,18 @@ pub mod exchange {
 
     impl Eq for ExchangeInfo {}
 
-    pub struct BinanceCom {
+    pub trait Exchange {
+        fn parse_symbols(&self, json: &Value) -> Vec<String>;
+        fn build_subscribe_msgs(&self, symbols: &Vec<String>) -> Vec<String>;
+        fn parse_snapshot(&self, json: &Value) -> Option<OrderBookSnapshot>;
     }
 
+    pub struct BinanceCom;
+
     impl Exchange for BinanceCom {
-        fn parse_symbols(&self, json_source: &Value) -> Vec<String> {
+        fn parse_symbols(&self, json: &Value) -> Vec<String> {
             let mut symbols = vec![];
-            for s in json_source.get("symbols").unwrap().as_array().unwrap() {
+            for s in json.get("symbols").unwrap().as_array().unwrap() {
                 symbols.push(format!("{}{}", s.get("baseAsset").unwrap().as_str().unwrap().to_lowercase(), 
                                              s.get("quoteAsset").unwrap().as_str().unwrap().to_lowercase()));
             }
@@ -57,15 +62,47 @@ pub mod exchange {
             subscribe_msgs.push(format!("{{\"method\":\"SUBSCRIBE\",\"params\":[{}],\"id\":1}}", channels));
             subscribe_msgs
         }
+
+        fn parse_snapshot(&self, json: &Value) -> Option<OrderBookSnapshot> {
+            match json.get("stream") {
+                Some(v) => {
+                    let stream = v.as_str().unwrap();
+                    let delim_idx = stream.find("@").unwrap_or(0usize);
+                    let s = &stream[0..delim_idx];
+
+                    // todo: find a way to truncate json vector instead of parsed vector
+                    let json_bids = json.get("data").unwrap().get("bids").unwrap().as_array().unwrap();
+                    let json_asks = json.get("data").unwrap().get("asks").unwrap().as_array().unwrap();
+
+                    let mut raw_bids = json_bids.into_iter().map(|e| {
+                        [ Decimal::from_str(e.as_array().unwrap()[0].as_str().unwrap()).unwrap(), 
+                          Decimal::from_str(e.as_array().unwrap()[1].as_str().unwrap()).unwrap()]
+                    }).collect::<Vec<_>>();
+                    raw_bids.truncate(TOP_K);
+                    let mut raw_asks = json_asks.into_iter().map(|e| {
+                        [ Decimal::from_str(e.as_array().unwrap()[0].as_str().unwrap()).unwrap(), 
+                          Decimal::from_str(e.as_array().unwrap()[1].as_str().unwrap()).unwrap()]
+                    }).collect::<Vec<_>>();
+                    raw_asks.truncate(TOP_K);
+
+                    Some(OrderBookSnapshot{
+                        bids: raw_bids, 
+                        asks: raw_asks, 
+                        exchange_name: "binance_com".to_string(), 
+                        symbol: s.to_string()})
+                },
+                None => None
+            }
+        }
+
     }
 
-    pub struct Bitstamp {
-    }
+    pub struct Bitstamp;
 
     impl Exchange for Bitstamp {
-        fn parse_symbols(&self, json_source: &Value) -> Vec<String> {
+        fn parse_symbols(&self, json: &Value) -> Vec<String> {
             let mut symbols = vec![];
-            for s in json_source.as_array().unwrap() {
+            for s in json.as_array().unwrap() {
                 symbols.push(s.get("url_symbol").unwrap().as_str().unwrap().to_string());
             }
             symbols
@@ -78,26 +115,51 @@ pub mod exchange {
             }
             subscribe_msgs
         }
-    }
 
-    pub struct NoneExchange {
-    }
+        fn parse_snapshot(&self, json: &Value) -> Option<OrderBookSnapshot> {
+            
+            match json.get("channel") {
+                Some(c) => {
 
-    impl Exchange for NoneExchange {
-        fn parse_symbols(&self, _: &Value) -> Vec<String> {
-            vec![]
+                    if json.get("event").unwrap().as_str().unwrap() != "data" {
+                        return None;
+                    }
+                    
+                    let channel = c.as_str().unwrap();
+                    let delim_idx = channel.rfind("_").unwrap_or(0usize);
+                    let s = &channel[delim_idx+1..channel.len()];
+
+                    // todo: find a way to truncate json vector instead of parsed vector
+                    let json_bids = json.get("data").unwrap().get("bids").unwrap().as_array().unwrap();
+                    let json_asks = json.get("data").unwrap().get("asks").unwrap().as_array().unwrap();
+
+                    let mut raw_bids = json_bids.into_iter().map(|e| {
+                        [ Decimal::from_str(e.as_array().unwrap()[0].as_str().unwrap()).unwrap(), 
+                          Decimal::from_str(e.as_array().unwrap()[1].as_str().unwrap()).unwrap()]
+                    }).collect::<Vec<_>>();
+                    raw_bids.truncate(TOP_K);
+                    let mut raw_asks = json_asks.into_iter().map(|e| {
+                        [ Decimal::from_str(e.as_array().unwrap()[0].as_str().unwrap()).unwrap(), 
+                          Decimal::from_str(e.as_array().unwrap()[1].as_str().unwrap()).unwrap()]
+                    }).collect::<Vec<_>>();
+                    raw_asks.truncate(TOP_K);
+
+                    Some(OrderBookSnapshot{
+                        bids: raw_bids, 
+                        asks: raw_asks, 
+                        exchange_name: "bitstamp".to_string(), 
+                        symbol: s.to_string()})
+                },
+                None => None
+            }
         }
-
-        fn build_subscribe_msgs(&self, _: &Vec<String>) -> Vec<String> {
-            vec![]
-        }
     }
 
-    pub fn build_exchange(exchange_name: &str) -> Box<dyn Exchange> {
+    pub fn build_exchange(exchange_name: &str) -> Option<Arc<dyn Exchange + Send + Sync>> {
         match exchange_name {
-            "binance_com" => Box::new(BinanceCom{}),
-            "bitstamp" => Box::new(Bitstamp{}),
-            _ => Box::new(NoneExchange{})
+            "binance_com" => Some(Arc::new(BinanceCom{})),
+            "bitstamp" => Some(Arc::new(Bitstamp{})),
+            _ => None
         }
     }
 }
@@ -140,16 +202,9 @@ pub mod config {
 pub mod order_book {
     use std::cmp::{Ordering, Ord, PartialOrd, PartialEq, Eq};
     use rust_decimal::Decimal;
-    use rust_decimal::prelude::*;
     use std::collections::BinaryHeap;
 
-    const TOP_K: usize = 10;
-
-    #[derive(Debug)]
-    pub struct RawLevel<'a> {
-        pub price: &'a str,
-        pub qty: &'a str
-    }
+    pub const TOP_K: usize = 10;
 
     #[derive(Debug, Eq, PartialEq, PartialOrd, Ord, Clone, Hash, Copy)]
     pub struct Level<'a> {
@@ -224,6 +279,26 @@ pub mod order_book {
             }
         }
 
+        fn remove_old_entries(&mut self, exchange_name: &str) {
+            let mut tmp = BinaryHeap::new();
+            while !self.bids.is_empty() {
+                let level = self.bids.pop().unwrap();
+                if level.data.exchange_name != exchange_name {
+                    tmp.push(level);
+                }
+            }
+            self.bids = tmp;
+
+            let mut tmp = BinaryHeap::new();
+            while !self.asks.is_empty() {
+                let level = self.asks.pop().unwrap();
+                if level.data.exchange_name != exchange_name {
+                    tmp.push(level);
+                }
+            }
+            self.asks = tmp;
+        }
+
         pub fn merge_snapshot(
                 &mut self, 
                 snapshot: &'a OrderBookSnapshot) {
@@ -232,15 +307,17 @@ pub mod order_book {
             assert!(snapshot.bids.len() <= TOP_K);
             assert!(snapshot.asks.len() <= TOP_K);
 
+            self.remove_old_entries(snapshot.exchange_name.as_str());
+
             for b in &snapshot.bids {
-                self.bids.push(BidLevel{data: Level{price: Decimal::from_str(b.price).unwrap(), 
-                                                          qty: Decimal::from_str(b.qty).unwrap(), 
-                                                          exchange_name: snapshot.exchange_name}});
+                self.bids.push(BidLevel{data: Level{price: b[0], 
+                                                          qty: b[1], 
+                                                          exchange_name: snapshot.exchange_name.as_str()}});
             }
             for a in &snapshot.asks {
-                self.asks.push(AskLevel{data: Level{price: Decimal::from_str(a.price).unwrap(), 
-                                                          qty: Decimal::from_str(a.qty).unwrap(), 
-                                                          exchange_name: snapshot.exchange_name}});
+                self.asks.push(AskLevel{data: Level{price: a[0], 
+                                                          qty: a[1], 
+                                                          exchange_name: snapshot.exchange_name.as_str()}});
             }
             self.keep_top_k(TOP_K);
         }
@@ -266,23 +343,28 @@ pub mod order_book {
         }
     }
 
-    #[derive(Debug)]
-    pub struct OrderBookSnapshot<'a> {
-        // assumption: order book snapshots from exchagnes have data already sorted
-        pub bids: Vec<RawLevel<'a>>,
-        pub asks: Vec<RawLevel<'a>>,
-        pub exchange_name: &'a str
+    type RawLevel = [Decimal; 2usize];
+
+    #[derive(Debug, Hash, Eq, PartialEq)]
+    pub struct OrderBookSnapshot {
+        // assumption: order book snapshots from exchagnes has data that is already sorted
+        pub bids: Vec<RawLevel>,
+        pub asks: Vec<RawLevel>,
+        pub exchange_name: String,
+        pub symbol: String
     }
 
-    impl<'a> OrderBookSnapshot<'a> {
-        pub fn new() -> OrderBookSnapshot<'a> {
-            OrderBookSnapshot{bids: vec![], asks: vec![], exchange_name: ""}
+    impl OrderBookSnapshot {
+        pub fn new() -> OrderBookSnapshot {
+            OrderBookSnapshot{bids: vec![], asks: vec![], exchange_name: "".to_string(), symbol: "".to_string()}
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::hash::{Hash, Hasher};
+    use std::collections::hash_map::DefaultHasher;
     use super::order_book::*;
     use rust_decimal_macros::dec;
 
@@ -290,7 +372,7 @@ mod tests {
     fn test_merged_order_book_empty_snapshot_gives_nothing_merged() {
         let bitstamp = "bitstamp";
         let mut mob = MergedOrderBook::new();
-        let snap1 = OrderBookSnapshot{bids: vec![], asks: vec![], exchange_name: bitstamp};
+        let snap1 = OrderBookSnapshot{bids: vec![], asks: vec![], exchange_name: bitstamp.to_string(), symbol: "btcusd".to_string()};
         mob.merge_snapshot(&snap1);
 
         assert_eq!(mob.drain_sorted_bids(), vec![]);
@@ -302,27 +384,28 @@ mod tests {
         let bitstamp = "bitstamp";
         let mut mob = MergedOrderBook::new();
         let snap1 = OrderBookSnapshot{
-            bids: vec![RawLevel{price: "10", qty: "1"},
-                       RawLevel{price: "9", qty: "1"},
-                       RawLevel{price: "8", qty: "1"},
-                       RawLevel{price: "7", qty: "1"},
-                       RawLevel{price: "6", qty: "1"},
-                       RawLevel{price: "5", qty: "1"},
-                       RawLevel{price: "4", qty: "1"},
-                       RawLevel{price: "3", qty: "1"},
-                       RawLevel{price: "2", qty: "1"},
-                       RawLevel{price: "1", qty: "1"}], 
-            asks: vec![RawLevel{price: "11", qty: "1"},
-                       RawLevel{price: "12", qty: "1"},
-                       RawLevel{price: "13", qty: "1"},
-                       RawLevel{price: "14", qty: "1"},
-                       RawLevel{price: "15", qty: "1"},
-                       RawLevel{price: "16", qty: "1"},
-                       RawLevel{price: "17", qty: "1"},
-                       RawLevel{price: "18", qty: "1"},
-                       RawLevel{price: "19", qty: "1"},
-                       RawLevel{price: "20", qty: "1"}], 
-            exchange_name: bitstamp};
+            bids: vec![[dec!(10), dec!(1)],
+                       [dec!(9), dec!(1)],
+                       [dec!(8), dec!(1)],
+                       [dec!(7), dec!(1)],
+                       [dec!(6), dec!(1)],
+                       [dec!(5), dec!(1)],
+                       [dec!(4), dec!(1)],
+                       [dec!(3), dec!(1)],
+                       [dec!(2), dec!(1)],
+                       [dec!(1), dec!(1)]],
+            asks: vec![[dec!(11), dec!(1)],
+                       [dec!(12), dec!(1)],
+                       [dec!(13), dec!(1)],
+                       [dec!(14), dec!(1)],
+                       [dec!(15), dec!(1)],
+                       [dec!(16), dec!(1)],
+                       [dec!(17), dec!(1)],
+                       [dec!(18), dec!(1)],
+                       [dec!(19), dec!(1)],
+                       [dec!(20), dec!(1)]], 
+            exchange_name: bitstamp.to_string(),
+            symbol: "btcusd".to_string()};
         mob.merge_snapshot(&snap1);   
 
         assert_eq!(mob.drain_sorted_bids(), vec![
@@ -355,52 +438,54 @@ mod tests {
         let binance_com = "binance_com";
         let mut mob = MergedOrderBook::new();
         let snap1 = OrderBookSnapshot{
-            bids: vec![RawLevel{price: "10", qty: "1"},
-                       RawLevel{price: "9", qty: "1"},
-                       RawLevel{price: "8", qty: "1"},
-                       RawLevel{price: "7", qty: "1"},
-                       RawLevel{price: "6", qty: "1"},
-                       RawLevel{price: "5", qty: "1"},
-                       RawLevel{price: "4", qty: "1"},
-                       RawLevel{price: "3", qty: "1"},
-                       RawLevel{price: "2", qty: "1"},
-                       RawLevel{price: "1", qty: "1"}], 
-            asks: vec![RawLevel{price: "11", qty: "1"},
-                       RawLevel{price: "12", qty: "1"},
-                       RawLevel{price: "13", qty: "1"},
-                       RawLevel{price: "14", qty: "1"},
-                       RawLevel{price: "15", qty: "1"},
-                       RawLevel{price: "16", qty: "1"},
-                       RawLevel{price: "17", qty: "1"},
-                       RawLevel{price: "18", qty: "1"},
-                       RawLevel{price: "19", qty: "1"},
-                       RawLevel{price: "20", qty: "1"}], 
-            exchange_name: bitstamp};
+            bids: vec![[dec!(10), dec!(1)],
+                       [dec!(9), dec!(1)],
+                       [dec!(8), dec!(1)],
+                       [dec!(7), dec!(1)],
+                       [dec!(6), dec!(1)],
+                       [dec!(5), dec!(1)],
+                       [dec!(4), dec!(1)],
+                       [dec!(3), dec!(1)],
+                       [dec!(2), dec!(1)],
+                       [dec!(1), dec!(1)]], 
+            asks: vec![[dec!(11), dec!(1)],
+                       [dec!(12), dec!(1)],
+                       [dec!(13), dec!(1)],
+                       [dec!(14), dec!(1)],
+                       [dec!(15), dec!(1)],
+                       [dec!(16), dec!(1)],
+                       [dec!(17), dec!(1)],
+                       [dec!(18), dec!(1)],
+                       [dec!(19), dec!(1)],
+                       [dec!(20), dec!(1)]], 
+            exchange_name: bitstamp.to_string(),
+            symbol: "btcusd".to_string()};
 
         mob.merge_snapshot(&snap1);   
 
         let snap2 = OrderBookSnapshot{
-            bids: vec![RawLevel{price: "10", qty: "2"},
-                        RawLevel{price: "9", qty: "2"},
-                        RawLevel{price: "8", qty: "2"},
-                        RawLevel{price: "7", qty: "2"},
-                        RawLevel{price: "6", qty: "1"},
-                        RawLevel{price: "5", qty: "2"},
-                        RawLevel{price: "4", qty: "2"},
-                        RawLevel{price: "3", qty: "2"},
-                        RawLevel{price: "2", qty: "2"},
-                        RawLevel{price: "1", qty: "2"}], 
-            asks: vec![RawLevel{price: "11", qty: "2"},
-                        RawLevel{price: "12", qty: "2"},
-                        RawLevel{price: "13", qty: "2"},
-                        RawLevel{price: "14", qty: "2"},
-                        RawLevel{price: "15", qty: "2"},
-                        RawLevel{price: "16", qty: "2"},
-                        RawLevel{price: "17", qty: "2"},
-                        RawLevel{price: "18", qty: "2"},
-                        RawLevel{price: "19", qty: "2"},
-                        RawLevel{price: "20", qty: "2"}], 
-            exchange_name: binance_com};
+            bids: vec![[dec!(10), dec!(2)],
+                        [dec!(9), dec!(2)],
+                        [dec!(8), dec!(2)],
+                        [dec!(7), dec!(2)],
+                        [dec!(6), dec!(1)],
+                        [dec!(5), dec!(2)],
+                        [dec!(4), dec!(2)],
+                        [dec!(3), dec!(2)],
+                        [dec!(2), dec!(2)],
+                        [dec!(1), dec!(2)]], 
+            asks: vec![[dec!(11), dec!(2)],
+                        [dec!(12), dec!(2)],
+                        [dec!(13), dec!(2)],
+                        [dec!(14), dec!(2)],
+                        [dec!(15), dec!(2)],
+                        [dec!(16), dec!(2)],
+                        [dec!(17), dec!(2)],
+                        [dec!(18), dec!(2)],
+                        [dec!(19), dec!(2)],
+                        [dec!(20), dec!(2)]], 
+            exchange_name: binance_com.to_string(),
+            symbol: "btcusd".to_string()};
 
             mob.merge_snapshot(&snap2);
 
@@ -431,6 +516,91 @@ mod tests {
                 Level{price: dec!(14), qty: dec!(1), exchange_name: bitstamp},
                 Level{price: dec!(15), qty: dec!(2), exchange_name: binance_com},
                 Level{price: dec!(15), qty: dec!(1), exchange_name: bitstamp}]);
+
+            assert_eq!(mob.drain_sorted_bids(), vec![]);
+            assert_eq!(mob.drain_sorted_asks(), vec![]);
+    }
+
+    #[test]
+    fn test_merged_order_book_multiple_snapshots_old_entries_removed() {
+        let bitstamp = "bitstamp";
+        let binance_com = "binance_com";
+        let mut mob = MergedOrderBook::new();
+        let snap1 = OrderBookSnapshot{
+            bids: vec![[dec!(10), dec!(1)],
+                       [dec!(9), dec!(1)],
+                       [dec!(8), dec!(1)],
+                       [dec!(7), dec!(1)],
+                       [dec!(6), dec!(1)],
+                       [dec!(5), dec!(1)],
+                       [dec!(4), dec!(1)],
+                       [dec!(3), dec!(1)],
+                       [dec!(2), dec!(1)],
+                       [dec!(1), dec!(1)]], 
+            asks: vec![[dec!(11), dec!(1)],
+                       [dec!(12), dec!(1)],
+                       [dec!(13), dec!(1)],
+                       [dec!(14), dec!(1)],
+                       [dec!(15), dec!(1)],
+                       [dec!(16), dec!(1)],
+                       [dec!(17), dec!(1)],
+                       [dec!(18), dec!(1)],
+                       [dec!(19), dec!(1)],
+                       [dec!(20), dec!(1)]], 
+            exchange_name: bitstamp.to_string(),
+            symbol: "btcusd".to_string()};
+
+        mob.merge_snapshot(&snap1);   
+
+        let snap2 = OrderBookSnapshot{
+            bids: vec![[dec!(10), dec!(2)],
+                        [dec!(9), dec!(2)],
+                        [dec!(8), dec!(2)],
+                        [dec!(7), dec!(2)],
+                        [dec!(6), dec!(1)],
+                        [dec!(5), dec!(2)],
+                        [dec!(4), dec!(2)],
+                        [dec!(3), dec!(2)],
+                        [dec!(2), dec!(2)],
+                        [dec!(1), dec!(2)]], 
+            asks: vec![[dec!(11), dec!(2)],
+                        [dec!(12), dec!(2)],
+                        [dec!(13), dec!(2)],
+                        [dec!(14), dec!(2)],
+                        [dec!(15), dec!(2)],
+                        [dec!(16), dec!(2)],
+                        [dec!(17), dec!(2)],
+                        [dec!(18), dec!(2)],
+                        [dec!(19), dec!(2)],
+                        [dec!(20), dec!(2)]], 
+            exchange_name: binance_com.to_string(),
+            symbol: "btcusd".to_string()};
+
+            mob.merge_snapshot(&snap2);
+
+            let snap3 = OrderBookSnapshot{
+                bids: vec![[dec!(5), dec!(2)]], 
+                asks: vec![[dec!(16), dec!(2)]], 
+                exchange_name: binance_com.to_string(),
+                symbol: "btcusd".to_string()};
+
+            mob.merge_snapshot(&snap3);
+
+            // check that old binance_com snapshot entries are gone
+            assert_eq!(mob.drain_sorted_bids(), vec![
+                Level{price: dec!(10), qty: dec!(1), exchange_name: bitstamp},
+                Level{price: dec!(9), qty: dec!(1), exchange_name: bitstamp},
+                Level{price: dec!(8), qty: dec!(1), exchange_name: bitstamp},
+                Level{price: dec!(7), qty: dec!(1), exchange_name: bitstamp},
+                Level{price: dec!(6), qty: dec!(1), exchange_name: bitstamp},
+                Level{price: dec!(5), qty: dec!(2), exchange_name: binance_com}]);
+            assert_eq!(mob.drain_sorted_asks(), vec![
+                Level{price: dec!(11), qty: dec!(1), exchange_name: bitstamp},
+                Level{price: dec!(12), qty: dec!(1), exchange_name: bitstamp},
+                Level{price: dec!(13), qty: dec!(1), exchange_name: bitstamp},
+                Level{price: dec!(14), qty: dec!(1), exchange_name: bitstamp},
+                Level{price: dec!(15), qty: dec!(1), exchange_name: bitstamp},
+                Level{price: dec!(16), qty: dec!(2), exchange_name: binance_com},]);
 
             assert_eq!(mob.drain_sorted_bids(), vec![]);
             assert_eq!(mob.drain_sorted_asks(), vec![]);

@@ -40,21 +40,23 @@ async fn ws_reader(
             Message::Text(s) => s,
             _ => { panic!("Text not found in msg."); }
         };
-        let value: &'static Value;
-        {
-            value = serde_json::from_str(&msg).expect("Unable to parse message");
-        }
-        match exchange.parse_snapshot(value) {
-            Some(snap) => {
-                let mut mobs = mobs.lock().unwrap();
-                mobs.entry(snap.symbol).or_insert(MergedOrderBook::new()).merge_snapshot(&snap);
-            },
-            None => ()
-        }
+
+        // todo: fix compiler error after moving from String to &'static str
+        //let value: &'static Value = serde_json::from_str(&msg).expect("Unable to parse message");
+        //match exchange.parse_snapshot(value) {
+        //    Some(snap) => {
+        //        let mut mobs = mobs.lock().unwrap();
+        //        mobs.entry(snap.symbol).or_insert(MergedOrderBook::new()).merge_snapshot(&snap);
+        //    },
+        //    None => ()
+        //}
         
-        // propagate to grpc server
+        // todo: implement grpc server
     }
 }
+
+#[derive(Default)]
+pub struct BookStoreImpl {}
 
 #[tokio::main]
 async fn main() {

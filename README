@@ -1,0 +1,8 @@
+to build: `cargo build`
+to configure symbols: `./target/debug/configure_symbols -c ./resources/exchanges.toml -s ./resources/symbols.txt`
+to run streamer: `./target/debug/stream_market_data -c ./resources/exchanges.toml -s ./resources/symbols.txt`
+
+there is many todos open (issue with &'static str got me stuck at the very last day):
+- cleanup not used imports
+- fix order book snapshot lifetime issue which appeareed after I moved from using String into &'static str for symbols and exhcange string storage
+- implement grpc server using tonic library

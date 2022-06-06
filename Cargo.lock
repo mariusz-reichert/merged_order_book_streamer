@@ -1036,6 +1036,7 @@ dependencies = [
  "rust_decimal",
  "rust_decimal_macros",
  "serde",
+ "serde_derive",
  "serde_json",
  "tokio",
  "tokio-tungstenite",

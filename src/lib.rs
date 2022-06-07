@@ -36,7 +36,7 @@ pub mod exchange {
     pub trait Exchange {
         fn parse_symbols(&self, json: &Value) -> Vec<String>;
         fn build_subscribe_msgs(&self, symbols: &Vec<String>) -> Vec<String>;
-        fn parse_snapshot(&self, json: &'static Value) -> Option<OrderBookSnapshot>;
+        fn parse_snapshot(&self, json: &Value) -> Option<OrderBookSnapshot>;
     }
 
     pub struct BinanceCom;
@@ -63,12 +63,12 @@ pub mod exchange {
             subscribe_msgs
         }
 
-        fn parse_snapshot(&self, json: &'static Value) -> Option<OrderBookSnapshot> {
+        fn parse_snapshot(&self, json: &Value) -> Option<OrderBookSnapshot> {
             match json.get("stream") {
                 Some(v) => {
                     let stream = v.as_str().unwrap();
                     let delim_idx = stream.find("@").unwrap_or(0usize);
-                    let s: &'static str = &stream[0..delim_idx];
+                    let s: &str = &stream[0..delim_idx];
 
                     // todo: find a way to truncate json vector instead of parsed vector
                     let json_bids = json.get("data").unwrap().get("bids").unwrap().as_array().unwrap();
@@ -88,8 +88,8 @@ pub mod exchange {
                     Some(OrderBookSnapshot{
                         bids: raw_bids, 
                         asks: raw_asks, 
-                        exchange_name: "binance_com", 
-                        symbol: s})
+                        exchange_name: "binance_com".to_string(), 
+                        symbol: s.to_string()})
                 },
                 None => None
             }
@@ -116,7 +116,7 @@ pub mod exchange {
             subscribe_msgs
         }
 
-        fn parse_snapshot(&self, json: &'static Value) -> Option<OrderBookSnapshot> {
+        fn parse_snapshot(&self, json: &Value) -> Option<OrderBookSnapshot> {
             
             let c  = json.get("channel");
             match c {
@@ -128,7 +128,7 @@ pub mod exchange {
                     
                     let channel = c.as_str().unwrap();
                     let delim_idx = channel.rfind("_").unwrap_or(0usize);
-                    let s: &'static str = &channel[delim_idx+1..channel.len()];
+                    let s: &str = &channel[delim_idx+1..channel.len()];
 
                     // todo: find a way to truncate json vector instead of parsed vector
                     let json_bids = json.get("data").unwrap().get("bids").unwrap().as_array().unwrap();
@@ -148,16 +148,16 @@ pub mod exchange {
                     Some(OrderBookSnapshot{
                         bids: raw_bids, 
                         asks: raw_asks, 
-                        exchange_name: "bitstamp", 
-                        symbol: s})
+                        exchange_name: "bitstamp".to_string(), 
+                        symbol: s.to_string()})
                 },
                 None => None
             }
         }
     }
 
-    pub fn build_exchange(exchange_name: &str) -> Option<Arc<dyn Exchange + Send + Sync>> {
-        match exchange_name {
+    pub fn build_exchange(exchange_name: String) -> Option<Arc<dyn Exchange + Send + Sync>> {
+        match exchange_name.as_str() {
             "binance_com" => Some(Arc::new(BinanceCom{})),
             "bitstamp" => Some(Arc::new(Bitstamp{})),
             _ => None
@@ -211,7 +211,7 @@ pub mod order_book {
     pub struct Level {
         pub price: Decimal,
         pub qty: Decimal,
-        pub exchange_name: &'static str,
+        pub exchange_name: String,
     }
 
     #[derive(Debug, Eq, PartialEq, Ord, Clone, Hash)]
@@ -242,7 +242,7 @@ pub mod order_book {
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone)]
     pub struct MergedOrderBook {
         // it's overkill for just 2 exchanges to use max/min heap for sorting levels
         // because algorithm for sorting of two sorted arrays could be use, however 
@@ -280,7 +280,7 @@ pub mod order_book {
             }
         }
 
-        fn remove_old_entries(&mut self, exchange_name: &str) {
+        fn remove_old_entries(&mut self, exchange_name: String) {
             let mut tmp = BinaryHeap::new();
             while !self.bids.is_empty() {
                 let level = self.bids.pop().unwrap();
@@ -303,23 +303,23 @@ pub mod order_book {
         // todo: find a way of passing OrderBookSnapshot as a ref
         pub fn merge_snapshot(
                 &mut self, 
-                snapshot: &OrderBookSnapshot) {
+                snapshot: OrderBookSnapshot) {
             
             // this should be ensured at parser level
             assert!(snapshot.bids.len() <= TOP_K);
             assert!(snapshot.asks.len() <= TOP_K);
 
-            self.remove_old_entries(snapshot.exchange_name);
+            self.remove_old_entries(snapshot.exchange_name.to_string());
 
             for b in &snapshot.bids {
                 self.bids.push(BidLevel{data: Level{price: b[0], 
                                                           qty: b[1], 
-                                                          exchange_name: snapshot.exchange_name}});
+                                                          exchange_name: snapshot.exchange_name.to_string()}});
             }
             for a in &snapshot.asks {
                 self.asks.push(AskLevel{data: Level{price: a[0], 
                                                           qty: a[1], 
-                                                          exchange_name: snapshot.exchange_name.clone()}});
+                                                          exchange_name: snapshot.exchange_name.to_string()}});
             }
             self.keep_top_k(TOP_K);
         }
@@ -347,18 +347,18 @@ pub mod order_book {
 
     type RawLevel = [Decimal; 2usize];
 
-    #[derive(Debug, Hash, Eq, PartialEq)]
+    #[derive(Debug, Hash, Eq, PartialEq, Clone)]
     pub struct OrderBookSnapshot {
         // assumption: order book snapshots from exchagnes has data that is already sorted
         pub bids: Vec<RawLevel>,
         pub asks: Vec<RawLevel>,
-        pub exchange_name: &'static str,
-        pub symbol: &'static str
+        pub exchange_name: String,
+        pub symbol: String
     }
 
     impl OrderBookSnapshot {
         pub fn new() -> OrderBookSnapshot {
-            OrderBookSnapshot{bids: vec![], asks: vec![], exchange_name: "", symbol: ""}
+            OrderBookSnapshot{bids: vec![], asks: vec![], exchange_name: "".to_string(), symbol: "".to_string()}
         }
     }
 }
@@ -374,8 +374,8 @@ mod tests {
     fn test_merged_order_book_empty_snapshot_gives_nothing_merged() {
         let bitstamp = "bitstamp";
         let mut mob = MergedOrderBook::new();
-        let snap1 = OrderBookSnapshot{bids: vec![], asks: vec![], exchange_name: bitstamp, symbol: "btcusd"};
-        mob.merge_snapshot(&snap1);
+        let snap1 = OrderBookSnapshot{bids: vec![], asks: vec![], exchange_name: bitstamp.to_string(), symbol: "btcusd".to_string()};
+        mob.merge_snapshot(snap1);
 
         assert_eq!(mob.drain_sorted_bids(), vec![]);
         assert_eq!(mob.drain_sorted_asks(), vec![]);
@@ -406,32 +406,32 @@ mod tests {
                        [dec!(18), dec!(1)],
                        [dec!(19), dec!(1)],
                        [dec!(20), dec!(1)]], 
-            exchange_name: bitstamp,
-            symbol: "btcusd"};
-        mob.merge_snapshot(&snap1);   
+            exchange_name: bitstamp.to_string(),
+            symbol: "btcusd".to_string()};
+        mob.merge_snapshot(snap1);   
 
         assert_eq!(mob.drain_sorted_bids(), vec![
-            Level{price: dec!(10), qty: dec!(1), exchange_name: bitstamp.clone()},
-            Level{price: dec!(9), qty: dec!(1), exchange_name: bitstamp.clone()},
-            Level{price: dec!(8), qty: dec!(1), exchange_name: bitstamp.clone()},
-            Level{price: dec!(7), qty: dec!(1), exchange_name: bitstamp.clone()},
-            Level{price: dec!(6), qty: dec!(1), exchange_name: bitstamp.clone()},
-            Level{price: dec!(5), qty: dec!(1), exchange_name: bitstamp.clone()},
-            Level{price: dec!(4), qty: dec!(1), exchange_name: bitstamp.clone()},
-            Level{price: dec!(3), qty: dec!(1), exchange_name: bitstamp.clone()},
-            Level{price: dec!(2), qty: dec!(1), exchange_name: bitstamp.clone()},
-            Level{price: dec!(1), qty: dec!(1), exchange_name: bitstamp.clone()}]);
+            Level{price: dec!(10), qty: dec!(1), exchange_name: bitstamp.to_string()},
+            Level{price: dec!(9), qty: dec!(1), exchange_name: bitstamp.to_string()},
+            Level{price: dec!(8), qty: dec!(1), exchange_name: bitstamp.to_string()},
+            Level{price: dec!(7), qty: dec!(1), exchange_name: bitstamp.to_string()},
+            Level{price: dec!(6), qty: dec!(1), exchange_name: bitstamp.to_string()},
+            Level{price: dec!(5), qty: dec!(1), exchange_name: bitstamp.to_string()},
+            Level{price: dec!(4), qty: dec!(1), exchange_name: bitstamp.to_string()},
+            Level{price: dec!(3), qty: dec!(1), exchange_name: bitstamp.to_string()},
+            Level{price: dec!(2), qty: dec!(1), exchange_name: bitstamp.to_string()},
+            Level{price: dec!(1), qty: dec!(1), exchange_name: bitstamp.to_string()}]);
         assert_eq!(mob.drain_sorted_asks(), vec![
-            Level{price: dec!(11), qty: dec!(1), exchange_name: bitstamp.clone()},
-            Level{price: dec!(12), qty: dec!(1), exchange_name: bitstamp.clone()},
-            Level{price: dec!(13), qty: dec!(1), exchange_name: bitstamp.clone()},
-            Level{price: dec!(14), qty: dec!(1), exchange_name: bitstamp.clone()},
-            Level{price: dec!(15), qty: dec!(1), exchange_name: bitstamp.clone()},
-            Level{price: dec!(16), qty: dec!(1), exchange_name: bitstamp.clone()},
-            Level{price: dec!(17), qty: dec!(1), exchange_name: bitstamp.clone()},
-            Level{price: dec!(18), qty: dec!(1), exchange_name: bitstamp.clone()},
-            Level{price: dec!(19), qty: dec!(1), exchange_name: bitstamp.clone()},
-            Level{price: dec!(20), qty: dec!(1), exchange_name: bitstamp.clone()}]);
+            Level{price: dec!(11), qty: dec!(1), exchange_name: bitstamp.to_string()},
+            Level{price: dec!(12), qty: dec!(1), exchange_name: bitstamp.to_string()},
+            Level{price: dec!(13), qty: dec!(1), exchange_name: bitstamp.to_string()},
+            Level{price: dec!(14), qty: dec!(1), exchange_name: bitstamp.to_string()},
+            Level{price: dec!(15), qty: dec!(1), exchange_name: bitstamp.to_string()},
+            Level{price: dec!(16), qty: dec!(1), exchange_name: bitstamp.to_string()},
+            Level{price: dec!(17), qty: dec!(1), exchange_name: bitstamp.to_string()},
+            Level{price: dec!(18), qty: dec!(1), exchange_name: bitstamp.to_string()},
+            Level{price: dec!(19), qty: dec!(1), exchange_name: bitstamp.to_string()},
+            Level{price: dec!(20), qty: dec!(1), exchange_name: bitstamp.to_string()}]);
     }
 
     #[test]
@@ -460,10 +460,10 @@ mod tests {
                        [dec!(18), dec!(1)],
                        [dec!(19), dec!(1)],
                        [dec!(20), dec!(1)]], 
-            exchange_name: bitstamp,
-            symbol: "btcusd"};
+            exchange_name: bitstamp.to_string(),
+            symbol: "btcusd".to_string()};
 
-        mob.merge_snapshot(&snap1);   
+        mob.merge_snapshot(snap1);   
 
         let snap2 = OrderBookSnapshot{
             bids: vec![[dec!(10), dec!(2)],
@@ -486,10 +486,10 @@ mod tests {
                         [dec!(18), dec!(2)],
                         [dec!(19), dec!(2)],
                         [dec!(20), dec!(2)]], 
-            exchange_name: binance_com,
-            symbol: "btcusd"};
+            exchange_name: binance_com.to_string(),
+            symbol: "btcusd".to_string()};
 
-            mob.merge_snapshot(&snap2);
+            mob.merge_snapshot(snap2);
 
             // following checks are made here:
             // - for bids the price level with biggest price is on top
@@ -497,27 +497,27 @@ mod tests {
             // - for price levels with same price the price level with biggest qty is closer to top
             // - for price levels with same price and qty the price level that was added first is closer to top
             assert_eq!(mob.drain_sorted_bids(), vec![
-                Level{price: dec!(10), qty: dec!(2), exchange_name: binance_com.clone()},
-                Level{price: dec!(10), qty: dec!(1), exchange_name: bitstamp.clone()},
-                Level{price: dec!(9), qty: dec!(2), exchange_name: binance_com.clone()},
-                Level{price: dec!(9), qty: dec!(1), exchange_name: bitstamp.clone()},
-                Level{price: dec!(8), qty: dec!(2), exchange_name: binance_com.clone()},
-                Level{price: dec!(8), qty: dec!(1), exchange_name: bitstamp.clone()},
-                Level{price: dec!(7), qty: dec!(2), exchange_name: binance_com.clone()},
-                Level{price: dec!(7), qty: dec!(1), exchange_name: bitstamp.clone()},
-                Level{price: dec!(6), qty: dec!(1), exchange_name: bitstamp.clone()},
-                Level{price: dec!(6), qty: dec!(1), exchange_name: binance_com.clone()}]);
+                Level{price: dec!(10), qty: dec!(2), exchange_name: binance_com.to_string()},
+                Level{price: dec!(10), qty: dec!(1), exchange_name: bitstamp.to_string()},
+                Level{price: dec!(9), qty: dec!(2), exchange_name: binance_com.to_string()},
+                Level{price: dec!(9), qty: dec!(1), exchange_name: bitstamp.to_string()},
+                Level{price: dec!(8), qty: dec!(2), exchange_name: binance_com.to_string()},
+                Level{price: dec!(8), qty: dec!(1), exchange_name: bitstamp.to_string()},
+                Level{price: dec!(7), qty: dec!(2), exchange_name: binance_com.to_string()},
+                Level{price: dec!(7), qty: dec!(1), exchange_name: bitstamp.to_string()},
+                Level{price: dec!(6), qty: dec!(1), exchange_name: bitstamp.to_string()},
+                Level{price: dec!(6), qty: dec!(1), exchange_name: binance_com.to_string()}]);
             assert_eq!(mob.drain_sorted_asks(), vec![
-                Level{price: dec!(11), qty: dec!(2), exchange_name: binance_com.clone()},
-                Level{price: dec!(11), qty: dec!(1), exchange_name: bitstamp.clone()},
-                Level{price: dec!(12), qty: dec!(2), exchange_name: binance_com.clone()},
-                Level{price: dec!(12), qty: dec!(1), exchange_name: bitstamp.clone()},
-                Level{price: dec!(13), qty: dec!(2), exchange_name: binance_com.clone()},
-                Level{price: dec!(13), qty: dec!(1), exchange_name: bitstamp.clone()},
-                Level{price: dec!(14), qty: dec!(2), exchange_name: binance_com.clone()},
-                Level{price: dec!(14), qty: dec!(1), exchange_name: bitstamp.clone()},
-                Level{price: dec!(15), qty: dec!(2), exchange_name: binance_com.clone()},
-                Level{price: dec!(15), qty: dec!(1), exchange_name: bitstamp.clone()}]);
+                Level{price: dec!(11), qty: dec!(2), exchange_name: binance_com.to_string()},
+                Level{price: dec!(11), qty: dec!(1), exchange_name: bitstamp.to_string()},
+                Level{price: dec!(12), qty: dec!(2), exchange_name: binance_com.to_string()},
+                Level{price: dec!(12), qty: dec!(1), exchange_name: bitstamp.to_string()},
+                Level{price: dec!(13), qty: dec!(2), exchange_name: binance_com.to_string()},
+                Level{price: dec!(13), qty: dec!(1), exchange_name: bitstamp.to_string()},
+                Level{price: dec!(14), qty: dec!(2), exchange_name: binance_com.to_string()},
+                Level{price: dec!(14), qty: dec!(1), exchange_name: bitstamp.to_string()},
+                Level{price: dec!(15), qty: dec!(2), exchange_name: binance_com.to_string()},
+                Level{price: dec!(15), qty: dec!(1), exchange_name: bitstamp.to_string()}]);
 
             assert_eq!(mob.drain_sorted_bids(), vec![]);
             assert_eq!(mob.drain_sorted_asks(), vec![]);
@@ -549,10 +549,10 @@ mod tests {
                        [dec!(18), dec!(1)],
                        [dec!(19), dec!(1)],
                        [dec!(20), dec!(1)]], 
-            exchange_name: bitstamp,
-            symbol: "btcusd"};
+            exchange_name: bitstamp.to_string(),
+            symbol: "btcusd".to_string()};
 
-        mob.merge_snapshot(&snap1);   
+        mob.merge_snapshot(snap1);   
 
         let snap2 = OrderBookSnapshot{
             bids: vec![[dec!(10), dec!(2)],
@@ -575,34 +575,34 @@ mod tests {
                         [dec!(18), dec!(2)],
                         [dec!(19), dec!(2)],
                         [dec!(20), dec!(2)]], 
-            exchange_name: binance_com,
-            symbol: "btcusd"};
+            exchange_name: binance_com.to_string(),
+            symbol: "btcusd".to_string()};
 
-            mob.merge_snapshot(&snap2);
+            mob.merge_snapshot(snap2);
 
             let snap3 = OrderBookSnapshot{
                 bids: vec![[dec!(5), dec!(2)]], 
                 asks: vec![[dec!(16), dec!(2)]], 
-                exchange_name: binance_com,
-                symbol: "btcusd"};
+                exchange_name: binance_com.to_string(),
+                symbol: "btcusd".to_string()};
 
-            mob.merge_snapshot(&snap3);
+            mob.merge_snapshot(snap3);
 
             // check that old binance_com snapshot entries are gone
             assert_eq!(mob.drain_sorted_bids(), vec![
-                Level{price: dec!(10), qty: dec!(1), exchange_name: bitstamp.clone()},
-                Level{price: dec!(9), qty: dec!(1), exchange_name: bitstamp.clone()},
-                Level{price: dec!(8), qty: dec!(1), exchange_name: bitstamp.clone()},
-                Level{price: dec!(7), qty: dec!(1), exchange_name: bitstamp.clone()},
-                Level{price: dec!(6), qty: dec!(1), exchange_name: bitstamp.clone()},
-                Level{price: dec!(5), qty: dec!(2), exchange_name: binance_com.clone()}]);
+                Level{price: dec!(10), qty: dec!(1), exchange_name: bitstamp.to_string()},
+                Level{price: dec!(9), qty: dec!(1), exchange_name: bitstamp.to_string()},
+                Level{price: dec!(8), qty: dec!(1), exchange_name: bitstamp.to_string()},
+                Level{price: dec!(7), qty: dec!(1), exchange_name: bitstamp.to_string()},
+                Level{price: dec!(6), qty: dec!(1), exchange_name: bitstamp.to_string()},
+                Level{price: dec!(5), qty: dec!(2), exchange_name: binance_com.to_string()}]);
             assert_eq!(mob.drain_sorted_asks(), vec![
-                Level{price: dec!(11), qty: dec!(1), exchange_name: bitstamp.clone()},
-                Level{price: dec!(12), qty: dec!(1), exchange_name: bitstamp.clone()},
-                Level{price: dec!(13), qty: dec!(1), exchange_name: bitstamp.clone()},
-                Level{price: dec!(14), qty: dec!(1), exchange_name: bitstamp.clone()},
-                Level{price: dec!(15), qty: dec!(1), exchange_name: bitstamp.clone()},
-                Level{price: dec!(16), qty: dec!(2), exchange_name: binance_com.clone()},]);
+                Level{price: dec!(11), qty: dec!(1), exchange_name: bitstamp.to_string()},
+                Level{price: dec!(12), qty: dec!(1), exchange_name: bitstamp.to_string()},
+                Level{price: dec!(13), qty: dec!(1), exchange_name: bitstamp.to_string()},
+                Level{price: dec!(14), qty: dec!(1), exchange_name: bitstamp.to_string()},
+                Level{price: dec!(15), qty: dec!(1), exchange_name: bitstamp.to_string()},
+                Level{price: dec!(16), qty: dec!(2), exchange_name: binance_com.to_string()},]);
 
             assert_eq!(mob.drain_sorted_bids(), vec![]);
             assert_eq!(mob.drain_sorted_asks(), vec![]);

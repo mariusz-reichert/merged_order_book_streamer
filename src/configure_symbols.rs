@@ -41,7 +41,7 @@ fn main() {
             info!("Pulling symbols from {}", &ex_info.name);
             let json = pull_symbols(&ex_info.symbols_url);
             let symbols = exchanges.entry(&ex_info.name)
-            .or_insert(build_exchange(&ex_info.name).unwrap())
+            .or_insert(build_exchange(ex_info.name.clone()).unwrap())
             .parse_symbols(&json);
 
             for symbol in symbols {

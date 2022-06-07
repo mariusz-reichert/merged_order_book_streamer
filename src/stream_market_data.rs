@@ -14,7 +14,7 @@ use serde::{Serialize, Deserialize};
 #[macro_use]
 extern crate log;
 
-type MergedOrderBooks = Arc<Mutex<HashMap<&'static str, MergedOrderBook>>>;
+type MergedOrderBooks = Arc<Mutex<HashMap<String, MergedOrderBook>>>;
 
 /// Program subscribes for market data accoridng to provided symbols and exchange config. Top 10 bids/asks and spreads are then streamed using grpc server
 #[derive(Parser, Debug)]
@@ -42,14 +42,18 @@ async fn ws_reader(
         };
 
         // todo: fix compiler error after moving from String to &'static str
-        //let value: &'static Value = serde_json::from_str(&msg).expect("Unable to parse message");
-        //match exchange.parse_snapshot(value) {
-        //    Some(snap) => {
-        //        let mut mobs = mobs.lock().unwrap();
-        //        mobs.entry(snap.symbol).or_insert(MergedOrderBook::new()).merge_snapshot(&snap);
-        //    },
-        //    None => ()
-        //}
+        let value: Value = serde_json::from_str(&msg).expect("Unable to parse message");
+        match exchange.parse_snapshot(&value) {
+           Some(snap) => {
+               let mut mobs = mobs.lock().unwrap();
+               let mob = mobs.entry(snap.symbol.clone()).or_insert(MergedOrderBook::new());
+               mob.merge_snapshot(snap.clone());
+
+               let mut mob2 = mob.clone();
+               info!("Merged book {}\nbids:\n{:?}\nasks:\n{:?}", snap.symbol.clone(), mob2.drain_sorted_bids(), mob2.drain_sorted_asks());
+           },
+           None => ()
+        }
         
         // todo: implement grpc server
     }
@@ -67,7 +71,7 @@ async fn main() {
     let symbols = load_symbols(&args.symbols_file);
 
     //let mut connections : HashMap<&str, &mut WebSocketStream<MaybeTlsStream<TcpStream>>> = HashMap::new();
-    let mobs = Arc::new(Mutex::new(HashMap::<&'static str, MergedOrderBook>::new()));
+    let mobs = Arc::new(Mutex::new(HashMap::<String, MergedOrderBook>::new()));
     let mut handles = vec![];
     let mut exchanges : HashMap<&str, Arc<dyn Exchange + Send + Sync>> = HashMap::new();
 
@@ -76,7 +80,7 @@ async fn main() {
         if ex_info.is_enabled {
             
             let subscribe_msgs = exchanges.entry(&ex_info.name.as_str())
-                                                       .or_insert(build_exchange(&ex_info.name.as_str()).unwrap())
+                                                       .or_insert(build_exchange(ex_info.name.clone()).unwrap())
                                                        .build_subscribe_msgs(&symbols);
 
             if !subscribe_msgs.is_empty() {
@@ -91,7 +95,7 @@ async fn main() {
                     // todo: handle failed subscriptions
                 }
             
-                let ex = build_exchange(&ex_info.name.as_str()).unwrap();
+                let ex = build_exchange(ex_info.name.clone()).unwrap();
                 let mobs = mobs.clone();
                 handles.push(tokio::spawn(async move{ ws_reader(ws, ex, mobs).await; }));
 

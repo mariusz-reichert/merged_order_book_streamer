@@ -1,5 +1,5 @@
 use rock::config::{read_config, load_symbols};
-use rock::order_book::{MergedOrderBook, OrderBookSnapshot};
+use rock::order_book::{MergedOrderBook};
 use rock::exchange::{Exchange, build_exchange};
 use clap::Parser;
 use std::collections::HashMap;
@@ -9,7 +9,6 @@ use tokio::net::TcpStream;
 use url::Url;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
-use serde::{Serialize, Deserialize};
 
 #[macro_use]
 extern crate log;
@@ -70,7 +69,6 @@ async fn main() {
     let exchanges_info = &read_config(&args.config_file).unwrap().exchanges_info;
     let symbols = load_symbols(&args.symbols_file);
 
-    //let mut connections : HashMap<&str, &mut WebSocketStream<MaybeTlsStream<TcpStream>>> = HashMap::new();
     let mobs = Arc::new(Mutex::new(HashMap::<String, MergedOrderBook>::new()));
     let mut handles = vec![];
     let mut exchanges : HashMap<&str, Arc<dyn Exchange + Send + Sync>> = HashMap::new();

@@ -365,8 +365,6 @@ pub mod order_book {
 
 #[cfg(test)]
 mod tests {
-    use std::hash::{Hash, Hasher};
-    use std::collections::hash_map::DefaultHasher;
     use super::order_book::*;
     use rust_decimal_macros::dec;
 

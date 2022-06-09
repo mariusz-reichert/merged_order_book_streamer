@@ -1,5 +1,5 @@
 use rock::config::{read_config, load_symbols};
-use rock::order_book::{MergedOrderBook};
+use rock::order_book::MergedOrderBook;
 use rock::exchange::{Exchange, build_exchange};
 use clap::Parser;
 use std::collections::HashMap;
@@ -116,5 +116,7 @@ async fn main() {
             }
         }
     }
-    futures::future::join_all(handles).await;
+    for h in handles {
+        h.await.unwrap();
+    }
 }

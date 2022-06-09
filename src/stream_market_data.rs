@@ -40,16 +40,32 @@ async fn ws_reader(
             _ => { panic!("Text not found in msg."); }
         };
 
-        // todo: fix compiler error after moving from String to &'static str
         let value: Value = serde_json::from_str(&msg).expect("Unable to parse message");
         match exchange.parse_snapshot(&value) {
-           Some(snap) => {
-               let mut mobs = mobs.lock().unwrap();
-               let mob = mobs.entry(snap.symbol.clone()).or_insert(MergedOrderBook::new());
-               mob.merge_snapshot(snap.clone());
+            Some(snap) => {
+                let mut mobs = mobs.lock().unwrap();
+                let mob = mobs.entry(snap.symbol.clone()).or_insert(MergedOrderBook::new());
+                mob.merge_snapshot(snap.clone());
 
-               let mut mob2 = mob.clone();
-               info!("Merged book {}\nbids:\n{:?}\nasks:\n{:?}", snap.symbol.clone(), mob2.drain_sorted_bids(), mob2.drain_sorted_asks());
+                let mut mob_to_publish = mob.clone();
+                let top_10_bids = mob_to_publish.drain_sorted_bids();
+                let top_10_asks= mob_to_publish.drain_sorted_asks();
+                info!("Merged order book for {}", snap.symbol);
+                info!("top 10 bids:");
+                for (i, b) in top_10_bids.iter().enumerate() {
+                    info!("{}: px: {}, qty: {}", i, b.price, b.qty);
+                }
+                info!("top 10 asks:");
+                for (i, a) in top_10_asks.iter().enumerate() {
+                    info!("{}: px: {}, qty: {}", i, a.price, a.qty);
+                }
+                if top_10_bids.len() > 0 && top_10_asks.len() > 0 { 
+                     
+                    info!("spread: {}\n", top_10_asks[0].price - top_10_bids[0].price );
+                } else { 
+                    info!("spread: None\n"); 
+                }
+                
            },
            None => ()
         }

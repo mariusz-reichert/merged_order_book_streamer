@@ -1,5 +1,5 @@
 use rock::config::{read_config, load_symbols};
-use rock::order_book::MergedOrderBook;
+use rock::order_book::{MergedOrderBook, Level};
 use rock::exchange::{Exchange, build_exchange};
 use clap::Parser;
 use std::collections::HashMap;
@@ -28,6 +28,24 @@ struct Args {
     symbols_file: String,
 }
 
+fn print_mob_to_log(symbol: &str, bids: &Vec<Level>, asks: &Vec<Level>) {
+    info!("Merged order book for {}", symbol);
+    info!("top 10 bids:");
+    for (i, b) in bids.iter().enumerate() {
+        info!("{}: px: {}, qty: {}", i, b.price, b.qty);
+    }
+    info!("top 10 asks:");
+    for (i, a) in asks.iter().enumerate() {
+        info!("{}: px: {}, qty: {}", i, a.price, a.qty);
+    }
+    if bids.len() > 0 && asks.len() > 0 { 
+         
+        info!("spread: {}\n", asks[0].price - bids[0].price );
+    } else { 
+        info!("spread: None\n"); 
+    }
+}
+
 async fn ws_reader(
     mut ws: WebSocketStream<MaybeTlsStream<TcpStream>>, 
     exchange: Arc<dyn Exchange + Send + Sync>,
@@ -50,22 +68,7 @@ async fn ws_reader(
                 let mut mob_to_publish = mob.clone();
                 let top_10_bids = mob_to_publish.drain_sorted_bids();
                 let top_10_asks= mob_to_publish.drain_sorted_asks();
-                info!("Merged order book for {}", snap.symbol);
-                info!("top 10 bids:");
-                for (i, b) in top_10_bids.iter().enumerate() {
-                    info!("{}: px: {}, qty: {}", i, b.price, b.qty);
-                }
-                info!("top 10 asks:");
-                for (i, a) in top_10_asks.iter().enumerate() {
-                    info!("{}: px: {}, qty: {}", i, a.price, a.qty);
-                }
-                if top_10_bids.len() > 0 && top_10_asks.len() > 0 { 
-                     
-                    info!("spread: {}\n", top_10_asks[0].price - top_10_bids[0].price );
-                } else { 
-                    info!("spread: None\n"); 
-                }
-                
+                print_mob_to_log(snap.symbol.as_str(), &top_10_bids, &top_10_asks);
            },
            None => ()
         }

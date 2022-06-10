@@ -1,5 +1,5 @@
 use rock::config::{read_config, load_symbols};
-use rock::order_book::{MergedOrderBook, Level};
+use rock::order_book::{MergedOrderBook, Level as BookLevel};
 use rock::exchange::{Exchange, build_exchange};
 use clap::Parser;
 use std::collections::HashMap;
@@ -9,6 +9,16 @@ use tokio::net::TcpStream;
 use url::Url;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
+use tonic::{transport::Server, Request, Response, Status};
+use orderbook::orderbook_aggregator_server::{OrderbookAggregator, OrderbookAggregatorServer};
+use orderbook::{Empty, Summary, Level};
+use tokio_stream::wrappers::ReceiverStream;
+use tokio::sync::mpsc;
+use rust_decimal::prelude::*;
+
+mod orderbook {
+    include!("orderbook.rs");
+}
 
 #[macro_use]
 extern crate log;
@@ -28,7 +38,7 @@ struct Args {
     symbols_file: String,
 }
 
-fn print_mob_to_log(symbol: &str, bids: &Vec<Level>, asks: &Vec<Level>) {
+fn print_summary_to_log(symbol: &str, bids: &Vec<BookLevel>, asks: &Vec<BookLevel>) {
     info!("Merged order book for {}", symbol);
     info!("top 10 bids:");
     for (i, b) in bids.iter().enumerate() {
@@ -46,6 +56,57 @@ fn print_mob_to_log(symbol: &str, bids: &Vec<Level>, asks: &Vec<Level>) {
     }
 }
 
+#[derive(Default)]
+pub struct OrderbookAggregatorImpl {
+    mobs: MergedOrderBooks
+}
+
+#[tonic::async_trait]
+impl OrderbookAggregator for OrderbookAggregatorImpl {
+
+    type BookSummaryStream = ReceiverStream<Result<Summary, Status>>;
+
+    async fn book_summary(
+        &self,
+        request: Request<Empty>) -> Result<Response<Self::BookSummaryStream>, Status> {
+        info!("Request from {:?}", request.remote_addr());
+
+        let (tx, rx) = mpsc::channel(4);
+        let mobs = self.mobs.lock().unwrap().clone();
+        tokio::spawn(async move {
+            
+            for (_symbol, mob) in mobs.iter() {
+                let mut mob_to_publish = mob.clone();
+                let top_10_bids = mob_to_publish.drain_sorted_bids();
+                let top_10_asks= mob_to_publish.drain_sorted_asks();
+                let mut _spread = 0.0;
+                
+                if top_10_bids.len() > 0 && top_10_asks.len() > 0 { 
+                    // todo: handle possible loss of precision
+                    _spread = (top_10_asks[0].price - top_10_bids[0].price).to_f64().unwrap();
+                }
+
+                tx.send(Ok(Summary {
+                    symbol: _symbol.clone(),
+                    spread:_spread,
+                    bids: top_10_bids.iter().map(
+                        |l| Level{ 
+                            exchange: l.exchange_name.clone(), 
+                            price: l.price.to_f64().unwrap(), 
+                            amount: l.qty.to_f64().unwrap()}).collect(),
+                    asks: top_10_asks.iter().map(
+                        |l| Level{ 
+                            exchange: l.exchange_name.clone(), 
+                            price: l.price.to_f64().unwrap(), 
+                            amount: l.qty.to_f64().unwrap()}).collect()
+                })).await.unwrap();
+            }
+        });
+    
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+}
+
 async fn ws_reader(
     mut ws: WebSocketStream<MaybeTlsStream<TcpStream>>, 
     exchange: Arc<dyn Exchange + Send + Sync>,
@@ -55,7 +116,7 @@ async fn ws_reader(
         let msg = msg.unwrap();
         let msg = match msg {
             Message::Text(s) => s,
-            _ => { panic!("Text not found in msg."); }
+            _ => { info!("Text not found in msg."); continue; }
         };
 
         let value: Value = serde_json::from_str(&msg).expect("Unable to parse message");
@@ -65,10 +126,13 @@ async fn ws_reader(
                 let mob = mobs.entry(snap.symbol.clone()).or_insert(MergedOrderBook::new());
                 mob.merge_snapshot(snap.clone());
 
+                
                 let mut mob_to_publish = mob.clone();
                 let top_10_bids = mob_to_publish.drain_sorted_bids();
                 let top_10_asks= mob_to_publish.drain_sorted_asks();
-                print_mob_to_log(snap.symbol.as_str(), &top_10_bids, &top_10_asks);
+                print_summary_to_log(snap.symbol.as_str(), &top_10_bids, &top_10_asks);
+                
+
            },
            None => ()
         }
@@ -76,9 +140,6 @@ async fn ws_reader(
         // todo: implement grpc server
     }
 }
-
-#[derive(Default)]
-pub struct BookStoreImpl {}
 
 #[tokio::main]
 async fn main() {
@@ -88,7 +149,7 @@ async fn main() {
     let exchanges_info = &read_config(&args.config_file).unwrap().exchanges_info;
     let symbols = load_symbols(&args.symbols_file);
 
-    let mobs = Arc::new(Mutex::new(HashMap::<String, MergedOrderBook>::new()));
+    let mobs: MergedOrderBooks = Arc::new(Mutex::new(HashMap::<String, MergedOrderBook>::new()));
     let mut handles = vec![];
     let mut exchanges : HashMap<&str, Arc<dyn Exchange + Send + Sync>> = HashMap::new();
 
@@ -119,6 +180,19 @@ async fn main() {
             }
         }
     }
+
+    let addr = "[::1]:50051".parse().unwrap();
+    let mut orderbook_aggregator = OrderbookAggregatorImpl::default();
+    orderbook_aggregator.mobs = mobs;
+
+    info!("Order book aggregator server listening on {}", addr);
+
+    Server::builder()
+        .accept_http1(true)
+        .add_service(OrderbookAggregatorServer::new(orderbook_aggregator))
+        .serve(addr)
+        .await.unwrap();
+
     for h in handles {
         h.await.unwrap();
     }

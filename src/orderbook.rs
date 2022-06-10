@@ -3,11 +3,13 @@ pub struct Empty {
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct Summary {
-    #[prost(double, tag="1")]
+    #[prost(string, tag="1")]
+    pub symbol: ::prost::alloc::string::String,
+    #[prost(double, tag="2")]
     pub spread: f64,
-    #[prost(message, repeated, tag="2")]
-    pub bids: ::prost::alloc::vec::Vec<Level>,
     #[prost(message, repeated, tag="3")]
+    pub bids: ::prost::alloc::vec::Vec<Level>,
+    #[prost(message, repeated, tag="4")]
     pub asks: ::prost::alloc::vec::Vec<Level>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]

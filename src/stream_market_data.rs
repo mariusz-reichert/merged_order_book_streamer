@@ -42,11 +42,11 @@ fn print_summary_to_log(symbol: &str, bids: &Vec<BookLevel>, asks: &Vec<BookLeve
     info!("Merged order book for {}", symbol);
     info!("top 10 bids:");
     for (i, b) in bids.iter().enumerate() {
-        info!("{}: px: {}, qty: {}", i, b.price, b.qty);
+        info!("{}: px: {}, qty: {}, exchange: {}", i, b.price, b.qty, b.exchange_name);
     }
     info!("top 10 asks:");
     for (i, a) in asks.iter().enumerate() {
-        info!("{}: px: {}, qty: {}", i, a.price, a.qty);
+        info!("{}: px: {}, qty: {}, exchange: {}", i, a.price, a.qty, a.exchange_name);
     }
     if bids.len() > 0 && asks.len() > 0 { 
          

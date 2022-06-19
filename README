@@ -2,14 +2,10 @@ This program streams as a grpc service:
 - top 10 bids
 - top 10 asks
 - a spread 
-of a merged order book for given symbol.
+of a merged order book for configure exchanges common symbols.
 
-It currently supports Bitstamp and Binance Com exchanges.
+It currently supports Bitstamp and Binance.com exchanges.
 
 Too build it: `cargo build --release`
 To configure symbols: `./target/debug/configure_symbols -c ./resources/exchanges.toml -s ./resources/symbols.txt`
 To start streaming data: `./target/release/stream_market_data -c ./resources/exchanges.toml -s ./resources/symbols.txt`
-
-Open todos:
-- implement grpc server using tonic library
-- get rid of String and cloning and use string slice if possible
